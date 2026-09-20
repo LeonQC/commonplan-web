@@ -6,6 +6,20 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000
 const AUTH_BASE_URL = import.meta.env.VITE_AUTH_BASE_URL || API_BASE_URL;
 let accessToken = null;
 let refreshPromise = null;
+const REQUEST_TIMEOUT_MS = 10000;
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('The server took too long to respond. Please try again.');
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
 
 function parseIssueRoute(pathname = window.location.pathname) {
   const match = pathname.match(/^\/workspaces\/([^/]+)\/issues\/([^/]+)\/?$/);
@@ -13,7 +27,7 @@ function parseIssueRoute(pathname = window.location.pathname) {
 }
 
 async function authRequest(path, options = {}) {
-  const response = await fetch(`${AUTH_BASE_URL}${path}`, {
+  const response = await fetchWithTimeout(`${AUTH_BASE_URL}${path}`, {
     ...options,
     credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...options.headers },
@@ -74,7 +88,7 @@ function App() {
   const [busy, setBusy] = useState(false);
 
   async function request(path, options = {}, allowRefresh = true) {
-    const response = await fetch(`${API_BASE_URL}${path}`, {
+    const response = await fetchWithTimeout(`${API_BASE_URL}${path}`, {
       ...options,
       credentials: 'include',
       headers: {
@@ -185,14 +199,24 @@ function App() {
       url.searchParams.delete('auth_error');
       window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
     }
-    Promise.all([
-      refreshAccessToken().then(() => request('/users/me', {}, false)).catch(() => null),
-      authRequest('/auth/google/status').catch(() => ({ configured: false })),
-    ]).then(async ([profile, google]) => {
+    async function bootstrap() {
+      const [profileResult, googleResult] = await Promise.allSettled([
+        refreshAccessToken().then(() => request('/users/me', {}, false)),
+        authRequest('/auth/google/status'),
+      ]);
+      const profile = profileResult.status === 'fulfilled' ? profileResult.value : null;
+      const google = googleResult.status === 'fulfilled' ? googleResult.value : { configured: false };
       setCurrentUser(profile);
-      setGoogleConfigured(google.configured);
-      if (profile) await loadWorkspaces(parseIssueRoute()?.workspaceId);
-    }).catch((error) => setStatus(error.message)).finally(() => setSessionLoading(false));
+      setGoogleConfigured(Boolean(google.configured));
+      setSessionLoading(false);
+      if (profile) {
+        loadWorkspaces(parseIssueRoute()?.workspaceId).catch((error) => setStatus(error.message));
+      }
+    }
+    bootstrap().catch((error) => {
+      setStatus(error.message);
+      setSessionLoading(false);
+    });
   }, []);
 
   useEffect(() => {
