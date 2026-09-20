@@ -48,6 +48,17 @@ function App() {
   const [teamForm, setTeamForm] = useState({ name: '', issue_prefix: '', description: '' });
   const [showWorkspaceForm, setShowWorkspaceForm] = useState(false);
   const [showTeamForm, setShowTeamForm] = useState(false);
+  const [overview, setOverview] = useState(null);
+  const [workflowStates, setWorkflowStates] = useState([]);
+  const [cycles, setCycles] = useState([]);
+  const [labels, setLabels] = useState([]);
+  const [issues, setIssues] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [selectedIssue, setSelectedIssue] = useState(null);
+  const [showIssueForm, setShowIssueForm] = useState(false);
+  const [issueForm, setIssueForm] = useState({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', assignee_user_id: '', label_ids: [] });
+  const [cycleForm, setCycleForm] = useState({ name: '', starts_on: '', ends_on: '' });
+  const [labelForm, setLabelForm] = useState({ name: '', color: '#6C6FF2' });
   const [status, setStatus] = useState('Ready');
   const [busy, setBusy] = useState(false);
 
@@ -97,6 +108,25 @@ function App() {
     setTeamId(data.some((item) => item.id === nextId) ? nextId : data[0]?.id || '');
   }
 
+  async function loadPlanning(selectedWorkspaceId, selectedTeamId) {
+    if (!selectedWorkspaceId || !selectedTeamId) return;
+    const base = `/api/v1/workspaces/${selectedWorkspaceId}/teams/${selectedTeamId}`;
+    const [nextOverview, nextStates, nextCycles, nextLabels, nextIssues, nextMembers] = await Promise.all([
+      request(`${base}/overview`),
+      request(`${base}/workflow-states`),
+      request(`${base}/cycles`),
+      request(`${base}/labels`),
+      request(`${base}/issues`),
+      request(`${base}/members`),
+    ]);
+    setOverview(nextOverview);
+    setWorkflowStates(nextStates);
+    setCycles(nextCycles);
+    setLabels(nextLabels);
+    setIssues(nextIssues);
+    setMembers(nextMembers);
+  }
+
   useEffect(() => {
     const url = new URL(window.location.href);
     const authError = url.searchParams.get('auth_error');
@@ -120,6 +150,13 @@ function App() {
       loadTeams(workspaceId).catch((error) => setStatus(error.message));
     }
   }, [workspaceId, currentUser]);
+
+  useEffect(() => {
+    setSelectedIssue(null);
+    if (currentUser && workspaceId && teamId) {
+      loadPlanning(workspaceId, teamId).catch((error) => setStatus(error.message));
+    }
+  }, [teamId, workspaceId, currentUser]);
 
   async function submitAuth(event) {
     event.preventDefault();
@@ -172,6 +209,67 @@ function App() {
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
+  async function createIssue(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const payload = {
+        ...issueForm,
+        priority: Number(issueForm.priority),
+        workflow_state_id: issueForm.workflow_state_id || null,
+        cycle_id: issueForm.cycle_id || null,
+        assignee_user_id: issueForm.assignee_user_id ? Number(issueForm.assignee_user_id) : null,
+      };
+      const created = await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/issues`, {
+        method: 'POST', body: JSON.stringify(payload),
+      });
+      setIssueForm({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', assignee_user_id: '', label_ids: [] });
+      setShowIssueForm(false);
+      await loadPlanning(workspaceId, teamId);
+      setSelectedIssue(created);
+      setStatus(`Created ${created.key}`);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function createCycle(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/cycles`, {
+        method: 'POST', body: JSON.stringify(cycleForm),
+      });
+      setCycleForm({ name: '', starts_on: '', ends_on: '' });
+      await loadPlanning(workspaceId, teamId);
+      setStatus('Cycle created');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function createLabel(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/labels`, {
+        method: 'POST', body: JSON.stringify(labelForm),
+      });
+      setLabelForm({ name: '', color: '#6C6FF2' });
+      await loadPlanning(workspaceId, teamId);
+      setStatus('Label created');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function updateIssue(changes) {
+    if (!selectedIssue) return;
+    setBusy(true);
+    try {
+      const updated = await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}`, {
+        method: 'PATCH', body: JSON.stringify({ version: selectedIssue.version, ...changes }),
+      });
+      setSelectedIssue(updated);
+      await loadPlanning(workspaceId, teamId);
+      setStatus(`Updated ${updated.key}`);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
   if (sessionLoading) return <div className="center-screen"><div className="spinner" />Loading CommonPlan…</div>;
   if (!currentUser) return (
     <main className="auth-shell">
@@ -195,6 +293,34 @@ function App() {
   const selectedTeam = teams.find((item) => item.id === teamId);
   const navItems = ['Overview', 'Issues', 'Cycles', 'Projects', 'Views', 'Settings'];
 
+  function planningContent() {
+    if (section === 'Overview') return (
+      <section className="overview">
+        <div className="hero-card"><div><span className="team-icon large">{selectedTeam.issue_prefix.slice(0, 1)}</span><h2>{selectedTeam.name}</h2><p>{selectedTeam.description || 'A focused space for this team’s projects, cycles, and issues.'}</p></div><span className="prefix-chip">{selectedTeam.issue_prefix}</span></div>
+        <div className="metric-grid"><Metric label="Open issues" value={overview?.open_issue_count ?? '—'} /><Metric label="Projects" value={overview?.project_count ?? 0} /><Metric label="Current cycle" value={overview?.current_cycle?.name || '—'} /><Metric label="Members" value={members.length || '—'} /></div>
+        <div className="activity-panel"><div className="panel-title"><div><h3>Recent issues</h3><p>The latest work across this team.</p></div><button className="primary" onClick={() => { setSection('Issues'); setShowIssueForm(true); }}>New issue</button></div>{overview?.recent_issues?.length ? <div className="issue-list">{overview.recent_issues.map((issue) => <button key={issue.key} className="issue-row" onClick={() => { setSection('Issues'); setSelectedIssue(issues.find((item) => item.key === issue.key)); }}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.workflow_state} /></button>)}</div> : <div className="inline-empty">No issues yet. Create the first item for this team.</div>}</div>
+      </section>
+    );
+
+    if (section === 'Issues') return (
+      <section className="planning-layout">
+        <div className="planning-main">
+          <div className="toolbar"><div><strong>{issues.length} issues</strong><span>Plan and track team work</span></div><button className="primary" onClick={() => setShowIssueForm(!showIssueForm)}>+ New issue</button></div>
+          {showIssueForm && <form className="editor-card" onSubmit={createIssue}><div className="form-grid"><label className="wide">Title<input autoFocus value={issueForm.title} onChange={(e) => setIssueForm({ ...issueForm, title: e.target.value })} required /></label><label className="wide">Description<textarea value={issueForm.description} onChange={(e) => setIssueForm({ ...issueForm, description: e.target.value })} /></label><label>Status<select value={issueForm.workflow_state_id} onChange={(e) => setIssueForm({ ...issueForm, workflow_state_id: e.target.value })}><option value="">Default</option>{workflowStates.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label><label>Priority<select value={issueForm.priority} onChange={(e) => setIssueForm({ ...issueForm, priority: e.target.value })}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label><label>Cycle<select value={issueForm.cycle_id} onChange={(e) => setIssueForm({ ...issueForm, cycle_id: e.target.value })}><option value="">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label><label>Assignee<select value={issueForm.assignee_user_id} onChange={(e) => setIssueForm({ ...issueForm, assignee_user_id: e.target.value })}><option value="">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label><label className="wide">Labels<select multiple value={issueForm.label_ids} onChange={(e) => setIssueForm({ ...issueForm, label_ids: [...e.target.selectedOptions].map((option) => option.value) })}>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select></label></div><div className="form-actions"><button type="button" className="secondary" onClick={() => setShowIssueForm(false)}>Cancel</button><button className="primary" disabled={busy}>Create issue</button></div></form>}
+          <div className="issue-board">{workflowStates.map((state) => <div className="state-group" key={state.id}><div className="state-heading"><StateBadge name={state.name} /><span>{issues.filter((issue) => issue.workflow_state_id === state.id).length}</span></div>{issues.filter((issue) => issue.workflow_state_id === state.id).map((issue) => <button key={issue.id} className={`issue-row ${selectedIssue?.id === issue.id ? 'selected' : ''}`} onClick={() => setSelectedIssue(issue)}><span className="priority-dot" data-priority={issue.priority} /><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><span className="row-meta">{issue.labels.map((label) => label.name).join(', ')}</span></button>)}</div>)}</div>
+          <div className="settings-grid"><form className="mini-card" onSubmit={createLabel}><h3>Create label</h3><div className="inline-fields"><input placeholder="Label name" value={labelForm.name} onChange={(e) => setLabelForm({ ...labelForm, name: e.target.value })} required /><input className="color-input" type="color" value={labelForm.color} onChange={(e) => setLabelForm({ ...labelForm, color: e.target.value })} /><button className="secondary">Add</button></div></form><div className="mini-card"><h3>Team labels</h3><div className="label-row">{labels.map((label) => <span className="label-pill" key={label.id} style={{ '--label-color': label.color }}>{label.name}</span>)}{!labels.length && <span className="muted">No labels</span>}</div></div></div>
+        </div>
+        {selectedIssue && <aside className="detail-panel"><button className="close-button" onClick={() => setSelectedIssue(null)}>×</button><span className="issue-key">{selectedIssue.key}</span><h2>{selectedIssue.title}</h2><p>{selectedIssue.description || 'No description provided.'}</p><label>Status<select value={selectedIssue.workflow_state_id} onChange={(e) => updateIssue({ workflow_state_id: e.target.value })} disabled={busy}>{workflowStates.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label><label>Priority<select value={selectedIssue.priority} onChange={(e) => updateIssue({ priority: Number(e.target.value) })} disabled={busy}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label><label>Cycle<select value={selectedIssue.cycle_id || ''} onChange={(e) => updateIssue({ cycle_id: e.target.value || null })} disabled={busy}><option value="">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label><label>Assignee<select value={selectedIssue.assignee_user_id || ''} onChange={(e) => updateIssue({ assignee_user_id: e.target.value ? Number(e.target.value) : null })} disabled={busy}><option value="">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label><div className="detail-meta">Version {selectedIssue.version} · Updated {new Date(selectedIssue.updated_at).toLocaleString()}</div></aside>}
+      </section>
+    );
+
+    if (section === 'Cycles') return (
+      <section className="cycle-page"><div className="cycle-grid">{cycles.map((cycle) => <article className="cycle-card" key={cycle.id}><div className="cycle-icon">◒</div><h3>{cycle.name}</h3><p>{new Date(`${cycle.starts_on}T00:00:00`).toLocaleDateString()} — {new Date(`${cycle.ends_on}T00:00:00`).toLocaleDateString()}</p><div className="progress-track"><span /></div></article>)}{!cycles.length && <div className="inline-empty">No cycles yet.</div>}</div><form className="editor-card cycle-form" onSubmit={createCycle}><h2>Create a cycle</h2><p>Cycles are non-overlapping, time-boxed planning windows.</p><label>Name<input value={cycleForm.name} onChange={(e) => setCycleForm({ ...cycleForm, name: e.target.value })} required /></label><div className="two-columns"><label>Starts on<input type="date" value={cycleForm.starts_on} onChange={(e) => setCycleForm({ ...cycleForm, starts_on: e.target.value })} required /></label><label>Ends on<input type="date" value={cycleForm.ends_on} onChange={(e) => setCycleForm({ ...cycleForm, ends_on: e.target.value })} required /></label></div><button className="primary" disabled={busy}>Create cycle</button></form></section>
+    );
+
+    return <section className="empty-panel large-panel"><div className="section-icon">{section.slice(0, 1)}</div><h2>{section}</h2><p>This Team-scoped destination is ready for its next milestone.</p></section>;
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -217,7 +343,7 @@ function App() {
       <main className="content">
         {!selectedWorkspace ? <EmptyState title="Create your first workspace" body="A workspace contains your teams and shared product work." action={() => setShowWorkspaceForm(true)} /> : !selectedTeam ? <EmptyState title="Create your first team" body="Teams own issue keys, cycles, projects, and views." action={() => setShowTeamForm(true)} /> : <>
           <header className="page-header"><div><div className="breadcrumbs">{selectedWorkspace.name} / {selectedTeam.name}</div><h1>{section}</h1></div><span className="role-chip">{selectedTeam.my_role}</span></header>
-          {section === 'Overview' ? <section className="overview"><div className="hero-card"><div><span className="team-icon large">{selectedTeam.issue_prefix.slice(0, 1)}</span><h2>{selectedTeam.name}</h2><p>{selectedTeam.description || 'A focused space for this team’s projects, cycles, and issues.'}</p></div><span className="prefix-chip">{selectedTeam.issue_prefix}</span></div><div className="metric-grid"><Metric label="Open issues" value="0" /><Metric label="Projects" value="0" /><Metric label="Current cycle" value="—" /><Metric label="Members" value="—" /></div><div className="empty-panel"><h3>Team activity will appear here</h3><p>Create issues in M2 to see recent work and progress.</p></div></section> : <section className="empty-panel large-panel"><div className="section-icon">{section.slice(0, 1)}</div><h2>{section}</h2><p>This Team-scoped destination is ready for its milestone implementation.</p></section>}
+          {planningContent()}
         </>}
         <div className="toast">{status}</div>
       </main>
@@ -226,6 +352,7 @@ function App() {
 }
 
 function Metric({ label, value }) { return <div className="metric"><span>{label}</span><strong>{value}</strong></div>; }
+function StateBadge({ name }) { return <span className={`state-badge state-${name.toLowerCase().replaceAll(' ', '-')}`}>{name}</span>; }
 function EmptyState({ title, body, action }) { return <section className="empty-panel large-panel"><h2>{title}</h2><p>{body}</p><button className="primary" onClick={action}>Get started</button></section>; }
 
 createRoot(document.getElementById('root')).render(<App />);
