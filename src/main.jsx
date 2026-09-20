@@ -48,6 +48,7 @@ function App() {
   const [teamForm, setTeamForm] = useState({ name: '', issue_prefix: '', description: '' });
   const [showWorkspaceForm, setShowWorkspaceForm] = useState(false);
   const [showTeamForm, setShowTeamForm] = useState(false);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [overview, setOverview] = useState(null);
   const [workflowStates, setWorkflowStates] = useState([]);
   const [cycles, setCycles] = useState([]);
@@ -59,7 +60,7 @@ function App() {
   const [issueForm, setIssueForm] = useState({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', assignee_user_id: '', label_ids: [] });
   const [cycleForm, setCycleForm] = useState({ name: '', starts_on: '', ends_on: '' });
   const [labelForm, setLabelForm] = useState({ name: '', color: '#6C6FF2' });
-  const [status, setStatus] = useState('Ready');
+  const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function request(path, options = {}, allowRefresh = true) {
@@ -157,6 +158,21 @@ function App() {
       loadPlanning(workspaceId, teamId).catch((error) => setStatus(error.message));
     }
   }, [teamId, workspaceId, currentUser]);
+
+  useEffect(() => {
+    if (!status) return undefined;
+    const timeout = window.setTimeout(() => setStatus(''), 4200);
+    return () => window.clearTimeout(timeout);
+  }, [status]);
+
+  useEffect(() => {
+    if (!workspaceMenuOpen) return undefined;
+    const closeMenu = (event) => {
+      if (!event.target.closest('.workspace-switcher')) setWorkspaceMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', closeMenu);
+    return () => document.removeEventListener('pointerdown', closeMenu);
+  }, [workspaceMenuOpen]);
 
   async function submitAuth(event) {
     event.preventDefault();
@@ -291,7 +307,14 @@ function App() {
 
   const selectedWorkspace = workspaces.find((item) => item.id === workspaceId);
   const selectedTeam = teams.find((item) => item.id === teamId);
-  const navItems = ['Overview', 'Issues', 'Cycles', 'Projects', 'Views', 'Settings'];
+  const navItems = [
+    { name: 'Overview', icon: 'overview' },
+    { name: 'Issues', icon: 'issues' },
+    { name: 'Cycles', icon: 'cycles' },
+    { name: 'Projects', icon: 'projects' },
+    { name: 'Views', icon: 'views' },
+    { name: 'Settings', icon: 'settings' },
+  ];
 
   function planningContent() {
     if (section === 'Overview') return (
@@ -315,7 +338,7 @@ function App() {
     );
 
     if (section === 'Cycles') return (
-      <section className="cycle-page"><div className="cycle-grid">{cycles.map((cycle) => <article className="cycle-card" key={cycle.id}><div className="cycle-icon">◒</div><h3>{cycle.name}</h3><p>{new Date(`${cycle.starts_on}T00:00:00`).toLocaleDateString()} — {new Date(`${cycle.ends_on}T00:00:00`).toLocaleDateString()}</p><div className="progress-track"><span /></div></article>)}{!cycles.length && <div className="inline-empty">No cycles yet.</div>}</div><form className="editor-card cycle-form" onSubmit={createCycle}><h2>Create a cycle</h2><p>Cycles are non-overlapping, time-boxed planning windows.</p><label>Name<input value={cycleForm.name} onChange={(e) => setCycleForm({ ...cycleForm, name: e.target.value })} required /></label><div className="two-columns"><label>Starts on<input type="date" value={cycleForm.starts_on} onChange={(e) => setCycleForm({ ...cycleForm, starts_on: e.target.value })} required /></label><label>Ends on<input type="date" value={cycleForm.ends_on} onChange={(e) => setCycleForm({ ...cycleForm, ends_on: e.target.value })} required /></label></div><button className="primary" disabled={busy}>Create cycle</button></form></section>
+      <section className="cycle-page"><div className="cycle-grid">{cycles.map((cycle) => <article className="cycle-card" key={cycle.id}><div className="cycle-icon">◒</div><h3>{cycle.name}</h3><p>{new Date(`${cycle.starts_on}T00:00:00`).toLocaleDateString()} — {new Date(`${cycle.ends_on}T00:00:00`).toLocaleDateString()}</p><div className="progress-track"><span /></div></article>)}{!cycles.length && <div className="empty-panel cycle-empty"><div className="section-icon">C</div><h3>No cycles yet</h3><p>Create a time-boxed planning window for this team.</p></div>}</div><form className="editor-card cycle-form" onSubmit={createCycle}><h2>Create a cycle</h2><p>Cycles are non-overlapping, time-boxed planning windows.</p><label>Name<input value={cycleForm.name} onChange={(e) => setCycleForm({ ...cycleForm, name: e.target.value })} required /></label><div className="two-columns"><label>Starts on<input type="date" value={cycleForm.starts_on} onChange={(e) => setCycleForm({ ...cycleForm, starts_on: e.target.value })} required /></label><label>Ends on<input type="date" value={cycleForm.ends_on} onChange={(e) => setCycleForm({ ...cycleForm, ends_on: e.target.value })} required /></label></div><button className="primary" disabled={busy}>Create cycle</button></form></section>
     );
 
     return <section className="empty-panel large-panel"><div className="section-icon">{section.slice(0, 1)}</div><h2>{section}</h2><p>This Team-scoped destination is ready for its next milestone.</p></section>;
@@ -326,26 +349,31 @@ function App() {
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark small">C</span><strong>CommonPlan</strong></div>
         <div className="workspace-row">
-          <select value={workspaceId} onChange={(e) => { setWorkspaceId(e.target.value); setTeamId(''); }}>
-            {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-          </select>
-          <button className="icon-button" title="New workspace" onClick={() => setShowWorkspaceForm(!showWorkspaceForm)}>+</button>
+          <WorkspaceSwitcher
+            open={workspaceMenuOpen}
+            onToggle={() => setWorkspaceMenuOpen(!workspaceMenuOpen)}
+            workspaces={workspaces}
+            selected={selectedWorkspace}
+            onSelect={(id) => { setWorkspaceId(id); setTeamId(''); setWorkspaceMenuOpen(false); }}
+            onCreate={() => { setShowWorkspaceForm(true); setWorkspaceMenuOpen(false); }}
+          />
+          <button className="icon-button" title="New workspace" aria-label="New workspace" onClick={() => setShowWorkspaceForm(!showWorkspaceForm)}><Icon name="plus" /></button>
         </div>
         {showWorkspaceForm && <form className="compact-form" onSubmit={createWorkspace}><input placeholder="Workspace name" value={workspaceForm.name} onChange={(e) => setWorkspaceForm({ ...workspaceForm, name: e.target.value, slug: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') })} required /><input placeholder="workspace-slug" value={workspaceForm.slug} onChange={(e) => setWorkspaceForm({ ...workspaceForm, slug: e.target.value })} required /><button className="primary" disabled={busy}>Create</button></form>}
-        <div className="sidebar-heading"><span>Teams</span>{selectedWorkspace?.my_role !== 'member' && <button className="icon-button" onClick={() => setShowTeamForm(!showTeamForm)}>+</button>}</div>
+        <div className="sidebar-heading"><span>Teams</span>{selectedWorkspace?.my_role !== 'member' && <button className="icon-button compact" aria-label="New team" onClick={() => setShowTeamForm(!showTeamForm)}><Icon name="plus" /></button>}</div>
         {showTeamForm && <form className="compact-form" onSubmit={createTeam}><input placeholder="Team name" value={teamForm.name} onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })} required /><input placeholder="KEY" maxLength="12" value={teamForm.issue_prefix} onChange={(e) => setTeamForm({ ...teamForm, issue_prefix: e.target.value.toUpperCase() })} required /><button className="primary" disabled={busy}>Create team</button></form>}
         <nav className="team-list">
-          {teams.map((team) => <div key={team.id} className={`team-block ${team.id === teamId ? 'active' : ''}`}><button className="team-name" onClick={() => { setTeamId(team.id); setSection('Overview'); }}><span className="team-icon">{team.issue_prefix.slice(0, 1)}</span>{team.name}</button>{team.id === teamId && <div className="team-subnav">{navItems.map((item) => <button key={item} className={section === item ? 'selected' : ''} onClick={() => setSection(item)}>{item}</button>)}</div>}</div>)}
+          {teams.map((team) => <div key={team.id} className={`team-block ${team.id === teamId ? 'active' : ''}`}><button className="team-name" onClick={() => { setTeamId(team.id); setSection('Overview'); }}><span className="team-icon">{team.issue_prefix.slice(0, 1)}</span><span>{team.name}</span><Icon name="chevron" /></button>{team.id === teamId && <div className="team-subnav">{navItems.map((item) => <button key={item.name} className={section === item.name ? 'selected' : ''} onClick={() => setSection(item.name)}><Icon name={item.icon} /><span>{item.name}</span></button>)}</div>}</div>)}
           {!teams.length && <p className="sidebar-empty">No teams yet</p>}
         </nav>
-        <div className="profile"><div className="avatar">{currentUser.name.slice(0, 1).toUpperCase()}</div><div><strong>{currentUser.name}</strong><span>{currentUser.email}</span></div><button className="text-button" onClick={logout}>Log out</button></div>
+        <div className="profile"><div className="avatar">{currentUser.name.slice(0, 1).toUpperCase()}</div><div><strong>{currentUser.name}</strong><span>{currentUser.email}</span></div><button className="profile-action" title="Log out" aria-label="Log out" onClick={logout}><Icon name="logout" /></button></div>
       </aside>
       <main className="content">
         {!selectedWorkspace ? <EmptyState title="Create your first workspace" body="A workspace contains your teams and shared product work." action={() => setShowWorkspaceForm(true)} /> : !selectedTeam ? <EmptyState title="Create your first team" body="Teams own issue keys, cycles, projects, and views." action={() => setShowTeamForm(true)} /> : <>
           <header className="page-header"><div><div className="breadcrumbs">{selectedWorkspace.name} / {selectedTeam.name}</div><h1>{section}</h1></div><span className="role-chip">{selectedTeam.my_role}</span></header>
           {planningContent()}
         </>}
-        <div className="toast">{status}</div>
+        {status && <div className="toast"><span className="toast-dot" />{status}</div>}
       </main>
     </div>
   );
@@ -354,5 +382,37 @@ function App() {
 function Metric({ label, value }) { return <div className="metric"><span>{label}</span><strong>{value}</strong></div>; }
 function StateBadge({ name }) { return <span className={`state-badge state-${name.toLowerCase().replaceAll(' ', '-')}`}>{name}</span>; }
 function EmptyState({ title, body, action }) { return <section className="empty-panel large-panel"><h2>{title}</h2><p>{body}</p><button className="primary" onClick={action}>Get started</button></section>; }
+
+function WorkspaceSwitcher({ open, onToggle, workspaces, selected, onSelect, onCreate }) {
+  return <div className="workspace-switcher">
+    <button className={`workspace-trigger ${open ? 'open' : ''}`} onClick={onToggle} aria-expanded={open}>
+      <span className="workspace-avatar">{selected?.name?.slice(0, 1).toUpperCase() || 'W'}</span>
+      <span className="workspace-copy"><strong>{selected?.name || 'Select workspace'}</strong><small>{selected?.my_role || 'Workspace'}</small></span>
+      <Icon name="chevron" />
+    </button>
+    {open && <div className="workspace-menu">
+      <div className="menu-label">Workspaces</div>
+      {workspaces.map((workspace) => <button key={workspace.id} className={workspace.id === selected?.id ? 'selected' : ''} onClick={() => onSelect(workspace.id)}><span className="workspace-avatar small">{workspace.name.slice(0, 1).toUpperCase()}</span><span>{workspace.name}</span>{workspace.id === selected?.id && <Icon name="check" />}</button>)}
+      <div className="menu-separator" />
+      <button onClick={onCreate}><span className="menu-add"><Icon name="plus" /></span><span>Create workspace</span></button>
+    </div>}
+  </div>;
+}
+
+function Icon({ name }) {
+  const paths = {
+    plus: <path d="M12 5v14M5 12h14" />,
+    chevron: <path d="m9 18 6-6-6-6" />,
+    check: <path d="m5 12 4 4L19 6" />,
+    overview: <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>,
+    issues: <><circle cx="12" cy="12" r="8" /><path d="M12 8v5M12 16h.01" /></>,
+    cycles: <><path d="M20 11a8 8 0 0 0-14.9-4M4 5v4h4" /><path d="M4 13a8 8 0 0 0 14.9 4M20 19v-4h-4" /></>,
+    projects: <><path d="M4 7h6l2 2h8v10H4z" /><path d="M4 7V5h6l2 2" /></>,
+    views: <><path d="M4 5h16v14H4z" /><path d="M9 5v14M9 10h11" /></>,
+    settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></>,
+    logout: <><path d="M10 5H5v14h5M14 8l4 4-4 4M18 12H9" /></>,
+  };
+  return <svg className="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
+}
 
 createRoot(document.getElementById('root')).render(<App />);
