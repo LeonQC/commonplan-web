@@ -6,15 +6,31 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000
 const AUTH_BASE_URL = import.meta.env.VITE_AUTH_BASE_URL || API_BASE_URL;
 let accessToken = null;
 let refreshPromise = null;
+const REQUEST_TIMEOUT_MS = 10000;
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('The server took too long to respond. Please try again.');
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function parseIssueRoute(pathname = window.location.pathname) {
+  const match = pathname.match(/^\/workspaces\/([^/]+)\/issues\/([^/]+)\/?$/);
+  return match ? { workspaceId: match[1], key: decodeURIComponent(match[2]).toUpperCase() } : null;
+}
 
 async function authRequest(path, options = {}) {
-  const response = await fetch(`${AUTH_BASE_URL}${path}`, {
+  const response = await fetchWithTimeout(`${AUTH_BASE_URL}${path}`, {
     ...options,
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
+    headers: { 'Content-Type': 'application/json', ...options.headers },
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Authentication failed' }));
@@ -31,28 +47,48 @@ async function refreshAccessToken() {
         accessToken = auth.access_token;
         return auth;
       })
-      .finally(() => {
-        refreshPromise = null;
-      });
+      .finally(() => { refreshPromise = null; });
   }
   return refreshPromise;
 }
 
 function App() {
-  const [users, setUsers] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [sessionLoading, setSessionLoading] = useState(true);
-  const [selectedUser, setSelectedUser] = useState(null);
-  const [form, setForm] = useState({ name: '', email: '' });
-  const [includeDeleted, setIncludeDeleted] = useState(false);
-  const [status, setStatus] = useState('Ready');
   const [googleConfigured, setGoogleConfigured] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [authMode, setAuthMode] = useState('login');
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' });
+  const [workspaces, setWorkspaces] = useState([]);
+  const [workspaceId, setWorkspaceId] = useState('');
+  const [teams, setTeams] = useState([]);
+  const [teamId, setTeamId] = useState('');
+  const [section, setSection] = useState('Overview');
+  const [workspaceForm, setWorkspaceForm] = useState({ name: '', slug: '', description: '' });
+  const [teamForm, setTeamForm] = useState({ name: '', issue_prefix: '', description: '' });
+  const [showWorkspaceForm, setShowWorkspaceForm] = useState(false);
+  const [showTeamForm, setShowTeamForm] = useState(false);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [overview, setOverview] = useState(null);
+  const [workflowStates, setWorkflowStates] = useState([]);
+  const [cycles, setCycles] = useState([]);
+  const [labels, setLabels] = useState([]);
+  const [issues, setIssues] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [selectedIssue, setSelectedIssue] = useState(null);
+  const [issueRoute, setIssueRoute] = useState(() => parseIssueRoute());
+  const [issueActivity, setIssueActivity] = useState([]);
+  const [issueDraft, setIssueDraft] = useState({ title: '', description: '' });
+  const [commentBody, setCommentBody] = useState('');
+  const [issueLoading, setIssueLoading] = useState(false);
+  const [showIssueForm, setShowIssueForm] = useState(false);
+  const [issueForm, setIssueForm] = useState({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
+  const [cycleForm, setCycleForm] = useState({ name: '', starts_on: '', ends_on: '' });
+  const [labelForm, setLabelForm] = useState({ name: '', color: '#6C6FF2' });
+  const [status, setStatus] = useState('');
+  const [busy, setBusy] = useState(false);
 
   async function request(path, options = {}, allowRefresh = true) {
-    const response = await fetch(`${API_BASE_URL}${path}`, {
+    const response = await fetchWithTimeout(`${API_BASE_URL}${path}`, {
       ...options,
       credentials: 'include',
       headers: {
@@ -61,7 +97,6 @@ function App() {
         ...options.headers,
       },
     });
-
     if (response.status === 401 && allowRefresh) {
       try {
         await refreshAccessToken();
@@ -71,350 +106,520 @@ function App() {
         setCurrentUser(null);
       }
     }
-
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-      if (response.status === 401) {
-        accessToken = null;
-        setCurrentUser(null);
-      }
       throw new Error(error.detail || 'Request failed');
     }
-
     if (response.status === 204) return null;
     return response.json();
   }
 
-  async function loadUsers() {
-    setLoading(true);
+  async function loadWorkspaces(preferredId) {
+    const data = await request('/api/v1/workspaces');
+    setWorkspaces(data);
+    const nextId = preferredId || workspaceId || data[0]?.id || '';
+    setWorkspaceId(data.some((item) => item.id === nextId) ? nextId : data[0]?.id || '');
+  }
+
+  async function loadTeams(selectedWorkspaceId, preferredId) {
+    if (!selectedWorkspaceId) {
+      setTeams([]);
+      setTeamId('');
+      return;
+    }
+    const data = await request(`/api/v1/workspaces/${selectedWorkspaceId}/teams`);
+    setTeams(data);
+    const nextId = preferredId || teamId || data[0]?.id || '';
+    setTeamId(data.some((item) => item.id === nextId) ? nextId : data[0]?.id || '');
+  }
+
+  async function loadPlanning(selectedWorkspaceId, selectedTeamId) {
+    if (!selectedWorkspaceId || !selectedTeamId) return;
+    const base = `/api/v1/workspaces/${selectedWorkspaceId}/teams/${selectedTeamId}`;
+    const [nextOverview, nextStates, nextCycles, nextLabels, nextIssues, nextMembers] = await Promise.all([
+      request(`${base}/overview`),
+      request(`${base}/workflow-states`),
+      request(`${base}/cycles`),
+      request(`${base}/labels`),
+      request(`${base}/issues`),
+      request(`${base}/members`),
+    ]);
+    setOverview(nextOverview);
+    setWorkflowStates(nextStates);
+    setCycles(nextCycles);
+    setLabels(nextLabels);
+    setIssues(nextIssues);
+    setMembers(nextMembers);
+  }
+
+  async function loadIssueDetail(selectedWorkspaceId, key) {
+    if (!selectedWorkspaceId || !key) return;
+    setIssueLoading(true);
     try {
-      const data = await request(`/users?include_deleted=${includeDeleted}`);
-      setUsers(data);
-      setStatus(`Loaded ${data.length} user${data.length === 1 ? '' : 's'}`);
-    } catch (error) {
-      setStatus(error.message);
+      const [issue, activity] = await Promise.all([
+        request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}`),
+        request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/activity`),
+      ]);
+      setSelectedIssue(issue);
+      setIssueDraft({ title: issue.title, description: issue.description || '' });
+      setIssueActivity(activity);
+      setSection('Issues');
+      if (issue.team_id !== teamId) setTeamId(issue.team_id);
     } finally {
-      setLoading(false);
+      setIssueLoading(false);
     }
   }
 
-  useEffect(() => {
-    if (currentUser) loadUsers();
-  }, [includeDeleted, currentUser]);
+  function openIssue(issue) {
+    const route = { workspaceId: issue.workspace_id || workspaceId, key: issue.key };
+    window.history.pushState({}, '', `/workspaces/${route.workspaceId}/issues/${encodeURIComponent(route.key)}`);
+    setIssueRoute(route);
+    setSelectedIssue(issue);
+    setIssueDraft({ title: issue.title, description: issue.description || '' });
+    setSection('Issues');
+  }
+
+  function closeIssue() {
+    window.history.pushState({}, '', '/');
+    setIssueRoute(null);
+    setSelectedIssue(null);
+    setIssueActivity([]);
+  }
+
+  function showSection(nextSection) {
+    if (issueRoute) closeIssue();
+    setSection(nextSection);
+  }
 
   useEffect(() => {
     const url = new URL(window.location.href);
     const authError = url.searchParams.get('auth_error');
     if (authError) {
-      setStatus(
-        authError === 'access_denied'
-          ? 'Google sign-in was canceled.'
-          : 'Google sign-in failed. Please try again.',
-      );
+      setStatus(authError === 'access_denied' ? 'Google sign-in was canceled.' : 'Google sign-in failed.');
       url.searchParams.delete('auth_error');
       window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
     }
-
-    Promise.all([
-      refreshAccessToken()
-        .then(() => request('/users/me', {}, false))
-        .catch(() => null),
-      authRequest('/auth/google/status').catch(() => ({ configured: false })),
-    ])
-      .then(([profile, google]) => {
-        setCurrentUser(profile);
-        setGoogleConfigured(google.configured);
-      })
-      .catch((error) => setStatus(error.message))
-      .finally(() => setSessionLoading(false));
+    async function bootstrap() {
+      const [profileResult, googleResult] = await Promise.allSettled([
+        refreshAccessToken().then(() => request('/users/me', {}, false)),
+        authRequest('/auth/google/status'),
+      ]);
+      const profile = profileResult.status === 'fulfilled' ? profileResult.value : null;
+      const google = googleResult.status === 'fulfilled' ? googleResult.value : { configured: false };
+      setCurrentUser(profile);
+      setGoogleConfigured(Boolean(google.configured));
+      setSessionLoading(false);
+      if (profile) {
+        loadWorkspaces(parseIssueRoute()?.workspaceId).catch((error) => setStatus(error.message));
+      }
+    }
+    bootstrap().catch((error) => {
+      setStatus(error.message);
+      setSessionLoading(false);
+    });
   }, []);
 
-  async function handleLogout() {
-    setLoading(true);
-    try {
-      await authRequest('/auth/logout', { method: 'POST' });
-      accessToken = null;
-      setCurrentUser(null);
-      setUsers([]);
-      resetForm();
-      setStatus('Signed out');
-    } catch (error) {
-      setStatus(error.message);
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (currentUser && workspaceId) {
+      loadTeams(workspaceId).catch((error) => setStatus(error.message));
     }
-  }
+  }, [workspaceId, currentUser]);
 
-  async function handleAuthSubmit(event) {
+  useEffect(() => {
+    if (currentUser && workspaceId && teamId) {
+      loadPlanning(workspaceId, teamId).catch((error) => setStatus(error.message));
+    }
+  }, [teamId, workspaceId, currentUser]);
+
+  useEffect(() => {
+    if (!currentUser || !issueRoute) return;
+    if (workspaceId !== issueRoute.workspaceId) {
+      setWorkspaceId(issueRoute.workspaceId);
+      return;
+    }
+    loadIssueDetail(issueRoute.workspaceId, issueRoute.key).catch((error) => {
+      setStatus(error.message);
+      closeIssue();
+    });
+  }, [currentUser, workspaceId, issueRoute?.workspaceId, issueRoute?.key]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const route = parseIssueRoute();
+      setIssueRoute(route);
+      if (!route) {
+        setSelectedIssue(null);
+        setIssueActivity([]);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (!status) return undefined;
+    const timeout = window.setTimeout(() => setStatus(''), 4200);
+    return () => window.clearTimeout(timeout);
+  }, [status]);
+
+  useEffect(() => {
+    if (!workspaceMenuOpen) return undefined;
+    const closeMenu = (event) => {
+      if (!event.target.closest('.workspace-switcher')) setWorkspaceMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', closeMenu);
+    return () => document.removeEventListener('pointerdown', closeMenu);
+  }, [workspaceMenuOpen]);
+
+  async function submitAuth(event) {
     event.preventDefault();
-    setLoading(true);
-    setStatus('Ready');
+    setBusy(true);
     try {
       const path = authMode === 'register' ? '/auth/register' : '/auth/login';
-      const payload = {
-        email: authForm.email,
-        password: authForm.password,
-        ...(authMode === 'register' ? { name: authForm.name } : {}),
-      };
-      const auth = await authRequest(path, {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      });
+      const payload = authMode === 'register' ? authForm : { email: authForm.email, password: authForm.password };
+      const auth = await authRequest(path, { method: 'POST', body: JSON.stringify(payload) });
       accessToken = auth.access_token;
-      setCurrentUser(await request('/users/me', {}, false));
-      setAuthForm({ name: '', email: '', password: '' });
-      setStatus(authMode === 'register' ? 'Account created' : 'Signed in');
-    } catch (error) {
-      setStatus(error.message);
-    } finally {
-      setLoading(false);
-    }
+      const profile = await request('/users/me', {}, false);
+      setCurrentUser(profile);
+      await loadWorkspaces();
+      setStatus(`Welcome, ${profile.name}`);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
-  function switchAuthMode() {
-    setAuthMode((mode) => (mode === 'login' ? 'register' : 'login'));
-    setAuthForm({ name: '', email: '', password: '' });
-    setStatus('Ready');
+  async function logout() {
+    setBusy(true);
+    try { await authRequest('/auth/logout', { method: 'POST' }); } catch { /* clear locally */ }
+    accessToken = null;
+    setCurrentUser(null);
+    setWorkspaces([]);
+    setTeams([]);
+    setBusy(false);
   }
 
-  function resetForm() {
-    setSelectedUser(null);
-    setForm({ name: '', email: '' });
-  }
-
-  async function handleUpdate(event) {
+  async function createWorkspace(event) {
     event.preventDefault();
-    if (!selectedUser) return;
-    setLoading(true);
+    setBusy(true);
     try {
-      await request(`/users/${selectedUser.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(form),
+      const created = await request('/api/v1/workspaces', { method: 'POST', body: JSON.stringify(workspaceForm) });
+      await loadWorkspaces(created.id);
+      setWorkspaceForm({ name: '', slug: '', description: '' });
+      setShowWorkspaceForm(false);
+      setStatus(`Created workspace ${created.name}`);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function createTeam(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const created = await request(`/api/v1/workspaces/${workspaceId}/teams`, {
+        method: 'POST', body: JSON.stringify(teamForm),
       });
-      setStatus(`Updated ${form.name}`);
-      resetForm();
-      await loadUsers();
-    } catch (error) {
-      setStatus(error.message);
-    } finally {
-      setLoading(false);
-    }
+      await loadTeams(workspaceId, created.id);
+      setTeamForm({ name: '', issue_prefix: '', description: '' });
+      setShowTeamForm(false);
+      setStatus(`Created team ${created.name}`);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
-  async function handleDelete(user) {
-    setLoading(true);
+  async function createIssue(event) {
+    event.preventDefault();
+    setBusy(true);
     try {
-      await request(`/users/${user.id}`, { method: 'DELETE' });
-      setStatus(`Soft deleted ${user.name}`);
-      if (selectedUser?.id === user.id) resetForm();
-      await loadUsers();
-    } catch (error) {
-      setStatus(error.message);
-    } finally {
-      setLoading(false);
-    }
+      const payload = {
+        ...issueForm,
+        priority: Number(issueForm.priority),
+        workflow_state_id: issueForm.workflow_state_id || null,
+        cycle_id: issueForm.cycle_id || null,
+        assignee_user_id: issueForm.assignee_user_id ? Number(issueForm.assignee_user_id) : null,
+        due_date: issueForm.due_date || null,
+      };
+      const created = await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/issues`, {
+        method: 'POST', body: JSON.stringify(payload),
+      });
+      setIssueForm({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
+      setShowIssueForm(false);
+      await loadPlanning(workspaceId, teamId);
+      openIssue(created);
+      setStatus(`Created ${created.key}`);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
-  function handleEdit(user) {
-    setSelectedUser(user);
-    setForm({ name: user.name, email: user.email });
+  async function createCycle(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/cycles`, {
+        method: 'POST', body: JSON.stringify(cycleForm),
+      });
+      setCycleForm({ name: '', starts_on: '', ends_on: '' });
+      await loadPlanning(workspaceId, teamId);
+      setStatus('Cycle created');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
-  if (sessionLoading) {
-    return (
-      <main className="auth-screen">
-        <section className="auth-card">
-          <div className="brand-mark">Z</div>
-          <p className="eyebrow">Project Zhitong</p>
-          <h1>Restoring your session…</h1>
-          <p className="auth-copy">Restoring your secure credentials.</p>
-        </section>
-      </main>
-    );
+  async function createLabel(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/labels`, {
+        method: 'POST', body: JSON.stringify(labelForm),
+      });
+      setLabelForm({ name: '', color: '#6C6FF2' });
+      await loadPlanning(workspaceId, teamId);
+      setStatus('Label created');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
-  if (!currentUser) {
-    const isRegistering = authMode === 'register';
-    return (
-      <main className="auth-screen">
-        <section className="auth-card">
-          <div className="brand-mark">Z</div>
-          <p className="eyebrow">Project Zhitong</p>
-          <h1>{isRegistering ? 'Create your account' : 'Welcome back'}</h1>
-          <p className="auth-copy">
-            {isRegistering
-              ? 'Register with your email or continue with Google.'
-              : 'Sign in with your email and password or continue with Google.'}
-          </p>
-          <form className="auth-form" onSubmit={handleAuthSubmit}>
-            {isRegistering && (
-              <label>
-                Name
-                <input
-                  value={authForm.name}
-                  onChange={(event) => setAuthForm({ ...authForm, name: event.target.value })}
-                  autoComplete="name"
-                  placeholder="Ada Lovelace"
-                  required
-                />
-              </label>
-            )}
-            <label>
-              Email
-              <input
-                type="email"
-                value={authForm.email}
-                onChange={(event) => setAuthForm({ ...authForm, email: event.target.value })}
-                autoComplete="email"
-                placeholder="you@example.com"
-                required
-              />
-            </label>
-            <label>
-              Password
-              <input
-                type="password"
-                value={authForm.password}
-                onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })}
-                autoComplete={isRegistering ? 'new-password' : 'current-password'}
-                minLength={isRegistering ? 8 : 1}
-                maxLength={128}
-                placeholder={isRegistering ? 'At least 8 characters' : 'Your password'}
-                required
-              />
-            </label>
-            <button className="primary auth-action" type="submit" disabled={loading}>
-              {loading ? 'Please wait…' : isRegistering ? 'Create account' : 'Sign in'}
-            </button>
-          </form>
-
-          <div className="auth-divider"><span>or</span></div>
-
-          {googleConfigured ? (
-            <a className="oauth-button auth-action" href={`${AUTH_BASE_URL}/auth/google/login`}>
-              Continue with Google
-            </a>
-          ) : (
-            <button className="oauth-button auth-action disabled" type="button" disabled>
-              Google OAuth not configured
-            </button>
-          )}
-
-          <p className="auth-switch">
-            {isRegistering ? 'Already have an account?' : 'New to Zhitong?'}{' '}
-            <button type="button" onClick={switchAuthMode}>
-              {isRegistering ? 'Sign in' : 'Create account'}
-            </button>
-          </p>
-          {status !== 'Ready' && <p className="auth-status">{status}</p>}
-        </section>
-      </main>
-    );
+  async function updateIssue(changes) {
+    if (!selectedIssue) return;
+    setBusy(true);
+    try {
+      const updated = await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}`, {
+        method: 'PATCH', body: JSON.stringify({ version: selectedIssue.version, ...changes }),
+      });
+      setSelectedIssue(updated);
+      setIssueDraft({ title: updated.title, description: updated.description || '' });
+      await Promise.all([
+        loadPlanning(workspaceId, teamId),
+        request(`/api/v1/workspaces/${workspaceId}/issues/${updated.key}/activity`).then(setIssueActivity),
+      ]);
+      setStatus(`Updated ${updated.key}`);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
-  return (
-    <main className="app-shell">
-      <section className="topbar">
-        <div>
-          <p className="eyebrow">Project Zhitong</p>
-          <h1>User Workspace</h1>
-        </div>
-        <div className="session-user">
-          {currentUser.avatar_url ? (
-            <img src={currentUser.avatar_url} alt="" referrerPolicy="no-referrer" />
-          ) : (
-            <span className="avatar-fallback">{currentUser.name.slice(0, 1).toUpperCase()}</span>
-          )}
-          <div>
-            <strong>{currentUser.name}</strong>
-            <span>{currentUser.email}</span>
-          </div>
-          <button type="button" className="ghost" onClick={handleLogout} disabled={loading}>
-            Sign out
-          </button>
-        </div>
-      </section>
+  async function saveIssueBody(event) {
+    event.preventDefault();
+    await updateIssue({ title: issueDraft.title, description: issueDraft.description || null });
+  }
 
-      <section className={`workspace ${selectedUser ? '' : 'single-column'}`}>
-        {selectedUser && (
-          <form className="panel" onSubmit={handleUpdate}>
-            <div className="panel-header">
-              <h2>Edit user</h2>
-              <button type="button" className="ghost" onClick={resetForm}>
-                Cancel
-              </button>
-            </div>
+  async function addComment(event) {
+    event.preventDefault();
+    if (!selectedIssue || !commentBody.trim()) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/comments`, {
+        method: 'POST', body: JSON.stringify({ body: commentBody }),
+      });
+      setCommentBody('');
+      const activity = await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/activity`);
+      setIssueActivity(activity);
+      setStatus('Comment added');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
 
-            <label>
-              Name
-              <input
-                value={form.name}
-                onChange={(event) => setForm({ ...form, name: event.target.value })}
-                placeholder="Ada Lovelace"
-                required
-              />
-            </label>
-
-            <label>
-              Email
-              <input
-                type="email"
-                value={form.email}
-                onChange={(event) => setForm({ ...form, email: event.target.value })}
-                placeholder="ada@example.com"
-                required
-              />
-            </label>
-
-            <button className="primary" disabled={loading}>
-              Save changes
-            </button>
-          </form>
-        )}
-
-        <section className="panel users-panel">
-          <div className="panel-header">
-            <div>
-              <h2>Users</h2>
-              <p>{status}</p>
-            </div>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={includeDeleted}
-                onChange={(event) => setIncludeDeleted(event.target.checked)}
-              />
-              Show deleted
-            </label>
-          </div>
-
-          <div className="user-list">
-            {users.map((user) => (
-              <article className={`user-row ${user.is_deleted ? 'deleted' : ''}`} key={user.id}>
-                <div>
-                  <strong>{user.name}</strong>
-                  <span>{user.email}</span>
-                  <small>
-                    #{user.id} Auth identity linked
-                  </small>
-                </div>
-                <div className="actions">
-                  <button type="button" onClick={() => handleEdit(user)} disabled={user.is_deleted}>
-                    Edit
-                  </button>
-                  <button type="button" onClick={() => handleDelete(user)} disabled={user.is_deleted}>
-                    Delete
-                  </button>
-                </div>
-              </article>
-            ))}
-
-            {!users.length && <p className="empty">No active users.</p>}
-          </div>
-        </section>
+  if (sessionLoading) return <div className="center-screen"><div className="spinner" />Loading CommonPlan…</div>;
+  if (!currentUser) return (
+    <main className="auth-shell">
+      <section className="auth-brand"><div className="brand-mark">C</div><h1>Plan work.<br />Move together.</h1><p>CommonPlan brings teams, projects, cycles, and issues into one focused workspace.</p></section>
+      <section className="auth-card">
+        <div className="eyebrow">COMMONPLAN</div><h2>{authMode === 'login' ? 'Welcome back' : 'Create your account'}</h2>
+        <form onSubmit={submitAuth}>
+          {authMode === 'register' && <label>Name<input value={authForm.name} onChange={(e) => setAuthForm({ ...authForm, name: e.target.value })} required /></label>}
+          <label>Email<input type="email" value={authForm.email} onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })} required /></label>
+          <label>Password<input type="password" value={authForm.password} onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })} minLength={authMode === 'register' ? 8 : 1} required /></label>
+          <button className="primary" disabled={busy}>{authMode === 'login' ? 'Sign in' : 'Create account'}</button>
+        </form>
+        {googleConfigured && <button className="google" onClick={() => { window.location.href = `${AUTH_BASE_URL}/auth/google/login`; }}>Continue with Google</button>}
+        <button className="text-button" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}>{authMode === 'login' ? 'New to CommonPlan? Create account' : 'Already have an account? Sign in'}</button>
+        <p className="status">{status}</p>
       </section>
     </main>
   );
+
+  const selectedWorkspace = workspaces.find((item) => item.id === workspaceId);
+  const selectedTeam = teams.find((item) => item.id === teamId);
+  const navItems = [
+    { name: 'Overview', icon: 'overview' },
+    { name: 'Issues', icon: 'issues' },
+    { name: 'Cycles', icon: 'cycles' },
+    { name: 'Projects', icon: 'projects' },
+    { name: 'Views', icon: 'views' },
+    { name: 'Settings', icon: 'settings' },
+  ];
+
+  function planningContent() {
+    if (section === 'Overview') return (
+      <section className="overview">
+        <div className="hero-card"><div><span className="team-icon large">{selectedTeam.issue_prefix.slice(0, 1)}</span><h2>{selectedTeam.name}</h2><p>{selectedTeam.description || 'A focused space for this team’s projects, cycles, and issues.'}</p></div><span className="prefix-chip">{selectedTeam.issue_prefix}</span></div>
+        <div className="metric-grid"><Metric label="Open issues" value={overview?.open_issue_count ?? '—'} /><Metric label="Projects" value={overview?.project_count ?? 0} /><Metric label="Current cycle" value={overview?.current_cycle?.name || '—'} /><Metric label="Members" value={members.length || '—'} /></div>
+        <div className="activity-panel"><div className="panel-title"><div><h3>Recent issues</h3><p>The latest work across this team.</p></div><button className="primary" onClick={() => { showSection('Issues'); setShowIssueForm(true); }}>New issue</button></div>{overview?.recent_issues?.length ? <div className="issue-list">{overview.recent_issues.map((issue) => <button key={issue.key} className="issue-row" onClick={() => openIssue(issues.find((item) => item.key === issue.key) || { ...issue, workspace_id: workspaceId })}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.workflow_state} /></button>)}</div> : <div className="inline-empty">No issues yet. Create the first item for this team.</div>}</div>
+      </section>
+    );
+
+    if (section === 'Issues' && issueRoute) {
+      if (issueLoading && !selectedIssue) return <section className="issue-detail-loading"><div className="spinner" />Loading issue…</section>;
+      if (!selectedIssue) return null;
+      const selectedLabelIds = selectedIssue.labels.map((label) => label.id);
+      return (
+        <section className="issue-detail-page">
+          <div className="issue-detail-topbar">
+            <button className="back-button" onClick={closeIssue}>← Issues</button>
+            <div className="issue-detail-crumb"><span className="team-icon">{selectedTeam.issue_prefix.slice(0, 1)}</span><span>{selectedIssue.key}</span></div>
+            <span className="version-chip">v{selectedIssue.version}</span>
+          </div>
+          <div className="issue-detail-grid">
+            <div className="issue-detail-main">
+              <form className="issue-copy-card" onSubmit={saveIssueBody}>
+                <input className="issue-title-input" aria-label="Issue title" value={issueDraft.title} onChange={(event) => setIssueDraft({ ...issueDraft, title: event.target.value })} required />
+                <textarea className="issue-description-input" aria-label="Issue description" placeholder="Add a clear description, context, acceptance criteria, or links…" value={issueDraft.description} onChange={(event) => setIssueDraft({ ...issueDraft, description: event.target.value })} />
+                <div className="copy-actions"><span>Created {formatDateTime(selectedIssue.created_at)}</span><button className="secondary" disabled={busy || !issueDraft.title.trim()}>Save description</button></div>
+              </form>
+
+              <section className="activity-card">
+                <div className="activity-heading"><div><h2>Activity</h2><p>Comments and changes are recorded chronologically.</p></div><span>{issueActivity.filter((item) => item.event_type !== 'comment.created').length}</span></div>
+                <form className="comment-composer" onSubmit={addComment}>
+                  <span className="avatar small-avatar">{currentUser.name.slice(0, 1).toUpperCase()}</span>
+                  <textarea placeholder="Leave a comment…" value={commentBody} onChange={(event) => setCommentBody(event.target.value)} />
+                  <button className="primary" disabled={busy || !commentBody.trim()}>Comment</button>
+                </form>
+                <div className="activity-list">
+                  {issueActivity.filter((item) => item.event_type !== 'comment.created').map((item) => <ActivityItem key={`${item.kind}-${item.id}`} item={item} />)}
+                  {!issueActivity.length && <div className="inline-empty">No activity yet.</div>}
+                </div>
+              </section>
+            </div>
+
+            <aside className="issue-properties-card">
+              <div className="properties-heading"><h2>Properties</h2><span>Changes save immediately</span></div>
+              <label>Status<select value={selectedIssue.workflow_state_id} onChange={(event) => updateIssue({ workflow_state_id: event.target.value })} disabled={busy}>{workflowStates.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label>
+              <label>Priority<select value={selectedIssue.priority} onChange={(event) => updateIssue({ priority: Number(event.target.value) })} disabled={busy}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label>
+              <label>Assignee<select value={selectedIssue.assignee_user_id || ''} onChange={(event) => updateIssue({ assignee_user_id: event.target.value ? Number(event.target.value) : null })} disabled={busy}><option value="">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label>
+              <label>Cycle<select value={selectedIssue.cycle_id || ''} onChange={(event) => updateIssue({ cycle_id: event.target.value || null })} disabled={busy}><option value="">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label>
+              <label>Due date<input type="date" value={selectedIssue.due_date || ''} onChange={(event) => updateIssue({ due_date: event.target.value || null })} disabled={busy} /></label>
+              <fieldset className="label-fieldset"><legend>Labels</legend><div className="label-options">{labels.map((label) => <label className="label-option" key={label.id}><input type="checkbox" checked={selectedLabelIds.includes(label.id)} onChange={() => updateIssue({ label_ids: selectedLabelIds.includes(label.id) ? selectedLabelIds.filter((id) => id !== label.id) : [...selectedLabelIds, label.id] })} disabled={busy} /><span className="label-swatch" style={{ '--label-color': label.color }} />{label.name}</label>)}{!labels.length && <span className="muted">No team labels yet.</span>}</div></fieldset>
+              <dl className="issue-metadata"><div><dt>Created by</dt><dd>{memberName(members, selectedIssue.creator_user_id)}</dd></div><div><dt>Updated</dt><dd>{formatDateTime(selectedIssue.updated_at)}</dd></div><div><dt>Issue ID</dt><dd>{selectedIssue.key}</dd></div></dl>
+            </aside>
+          </div>
+        </section>
+      );
+    }
+
+    if (section === 'Issues') return (
+      <section className="planning-list-page">
+        <div className="toolbar"><div><strong>{issues.length} issues</strong><span>Plan and track team work</span></div><button className="primary" onClick={() => setShowIssueForm(!showIssueForm)}>+ New issue</button></div>
+        {showIssueForm && <form className="editor-card" onSubmit={createIssue}><div className="form-grid"><label className="wide">Title<input autoFocus value={issueForm.title} onChange={(e) => setIssueForm({ ...issueForm, title: e.target.value })} required /></label><label className="wide">Description<textarea value={issueForm.description} onChange={(e) => setIssueForm({ ...issueForm, description: e.target.value })} /></label><label>Status<select value={issueForm.workflow_state_id} onChange={(e) => setIssueForm({ ...issueForm, workflow_state_id: e.target.value })}><option value="">Default</option>{workflowStates.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label><label>Priority<select value={issueForm.priority} onChange={(e) => setIssueForm({ ...issueForm, priority: e.target.value })}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label><label>Cycle<select value={issueForm.cycle_id} onChange={(e) => setIssueForm({ ...issueForm, cycle_id: e.target.value })}><option value="">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label><label>Assignee<select value={issueForm.assignee_user_id} onChange={(e) => setIssueForm({ ...issueForm, assignee_user_id: e.target.value })}><option value="">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label><label>Due date<input type="date" value={issueForm.due_date} onChange={(e) => setIssueForm({ ...issueForm, due_date: e.target.value })} /></label><label className="wide">Labels<select multiple value={issueForm.label_ids} onChange={(e) => setIssueForm({ ...issueForm, label_ids: [...e.target.selectedOptions].map((option) => option.value) })}>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select></label></div><div className="form-actions"><button type="button" className="secondary" onClick={() => setShowIssueForm(false)}>Cancel</button><button className="primary" disabled={busy}>Create issue</button></div></form>}
+        <div className="issue-board">{workflowStates.map((state) => <div className="state-group" key={state.id}><div className="state-heading"><StateBadge name={state.name} /><span>{issues.filter((issue) => issue.workflow_state_id === state.id).length}</span></div>{issues.filter((issue) => issue.workflow_state_id === state.id).map((issue) => <button key={issue.id} className="issue-row" onClick={() => openIssue(issue)}><span className="priority-dot" data-priority={issue.priority} /><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><span className="row-meta">{issue.labels.map((label) => label.name).join(', ')}</span></button>)}</div>)}</div>
+        <div className="settings-grid"><form className="mini-card" onSubmit={createLabel}><h3>Create label</h3><div className="inline-fields"><input placeholder="Label name" value={labelForm.name} onChange={(e) => setLabelForm({ ...labelForm, name: e.target.value })} required /><input className="color-input" type="color" value={labelForm.color} onChange={(e) => setLabelForm({ ...labelForm, color: e.target.value })} /><button className="secondary">Add</button></div></form><div className="mini-card"><h3>Team labels</h3><div className="label-row">{labels.map((label) => <span className="label-pill" key={label.id} style={{ '--label-color': label.color }}>{label.name}</span>)}{!labels.length && <span className="muted">No labels</span>}</div></div></div>
+      </section>
+    );
+
+    if (section === 'Cycles') return (
+      <section className="cycle-page"><div className="cycle-grid">{cycles.map((cycle) => <article className="cycle-card" key={cycle.id}><div className="cycle-icon">◒</div><h3>{cycle.name}</h3><p>{new Date(`${cycle.starts_on}T00:00:00`).toLocaleDateString()} — {new Date(`${cycle.ends_on}T00:00:00`).toLocaleDateString()}</p><div className="progress-track"><span /></div></article>)}{!cycles.length && <div className="empty-panel cycle-empty"><div className="section-icon">C</div><h3>No cycles yet</h3><p>Create a time-boxed planning window for this team.</p></div>}</div><form className="editor-card cycle-form" onSubmit={createCycle}><h2>Create a cycle</h2><p>Cycles are non-overlapping, time-boxed planning windows.</p><label>Name<input value={cycleForm.name} onChange={(e) => setCycleForm({ ...cycleForm, name: e.target.value })} required /></label><div className="two-columns"><label>Starts on<input type="date" value={cycleForm.starts_on} onChange={(e) => setCycleForm({ ...cycleForm, starts_on: e.target.value })} required /></label><label>Ends on<input type="date" value={cycleForm.ends_on} onChange={(e) => setCycleForm({ ...cycleForm, ends_on: e.target.value })} required /></label></div><button className="primary" disabled={busy}>Create cycle</button></form></section>
+    );
+
+    return <section className="empty-panel large-panel"><div className="section-icon">{section.slice(0, 1)}</div><h2>{section}</h2><p>This Team-scoped destination is ready for its next milestone.</p></section>;
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand"><span className="brand-mark small">C</span><strong>CommonPlan</strong></div>
+        <div className="workspace-row">
+          <WorkspaceSwitcher
+            open={workspaceMenuOpen}
+            onToggle={() => setWorkspaceMenuOpen(!workspaceMenuOpen)}
+            workspaces={workspaces}
+            selected={selectedWorkspace}
+            onSelect={(id) => { setWorkspaceId(id); setTeamId(''); setWorkspaceMenuOpen(false); }}
+            onCreate={() => { setShowWorkspaceForm(true); setWorkspaceMenuOpen(false); }}
+          />
+          <button className="icon-button" title="New workspace" aria-label="New workspace" onClick={() => setShowWorkspaceForm(!showWorkspaceForm)}><Icon name="plus" /></button>
+        </div>
+        {showWorkspaceForm && <form className="compact-form" onSubmit={createWorkspace}><input placeholder="Workspace name" value={workspaceForm.name} onChange={(e) => setWorkspaceForm({ ...workspaceForm, name: e.target.value, slug: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') })} required /><input placeholder="workspace-slug" value={workspaceForm.slug} onChange={(e) => setWorkspaceForm({ ...workspaceForm, slug: e.target.value })} required /><button className="primary" disabled={busy}>Create</button></form>}
+        <div className="sidebar-heading"><span>Teams</span>{selectedWorkspace?.my_role !== 'member' && <button className="icon-button compact" aria-label="New team" onClick={() => setShowTeamForm(!showTeamForm)}><Icon name="plus" /></button>}</div>
+        {showTeamForm && <form className="compact-form" onSubmit={createTeam}><input placeholder="Team name" value={teamForm.name} onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })} required /><input placeholder="KEY" maxLength="12" value={teamForm.issue_prefix} onChange={(e) => setTeamForm({ ...teamForm, issue_prefix: e.target.value.toUpperCase() })} required /><button className="primary" disabled={busy}>Create team</button></form>}
+        <nav className="team-list">
+          {teams.map((team) => <div key={team.id} className={`team-block ${team.id === teamId ? 'active' : ''}`}><button className="team-name" onClick={() => { if (issueRoute) closeIssue(); setTeamId(team.id); setSection('Overview'); }}><span className="team-icon">{team.issue_prefix.slice(0, 1)}</span><span>{team.name}</span><Icon name="chevron" /></button>{team.id === teamId && <div className="team-subnav">{navItems.map((item) => <button key={item.name} className={section === item.name && (!issueRoute || item.name === 'Issues') ? 'selected' : ''} onClick={() => showSection(item.name)}><Icon name={item.icon} /><span>{item.name}</span></button>)}</div>}</div>)}
+          {!teams.length && <p className="sidebar-empty">No teams yet</p>}
+        </nav>
+        <div className="profile"><div className="avatar">{currentUser.name.slice(0, 1).toUpperCase()}</div><div><strong>{currentUser.name}</strong><span>{currentUser.email}</span></div><button className="profile-action" title="Log out" aria-label="Log out" onClick={logout}><Icon name="logout" /></button></div>
+      </aside>
+      <main className="content">
+        {!selectedWorkspace ? <EmptyState title="Create your first workspace" body="A workspace contains your teams and shared product work." action={() => setShowWorkspaceForm(true)} /> : !selectedTeam ? <EmptyState title="Create your first team" body="Teams own issue keys, cycles, projects, and views." action={() => setShowTeamForm(true)} /> : <>
+          <header className="page-header"><div><div className="breadcrumbs">{selectedWorkspace.name} / {selectedTeam.name}{selectedIssue && issueRoute ? ` / ${selectedIssue.key}` : ''}</div><h1>{selectedIssue && issueRoute ? 'Issue detail' : section}</h1></div><span className="role-chip">{selectedTeam.my_role}</span></header>
+          {planningContent()}
+        </>}
+        {status && <div className="toast"><span className="toast-dot" />{status}</div>}
+      </main>
+    </div>
+  );
+}
+
+function formatDateTime(value) {
+  if (!value) return '—';
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+  }).format(new Date(value));
+}
+
+function memberName(members, userId) {
+  return members.find((member) => member.user_id === userId)?.name || 'Former member';
+}
+
+function ActivityItem({ item }) {
+  const initial = (item.actor_name || 'S').slice(0, 1).toUpperCase();
+  if (item.kind === 'comment') return (
+    <article className="activity-item comment-item">
+      <span className="avatar small-avatar">{initial}</span>
+      <div><div className="activity-byline"><strong>{item.actor_name || 'Former member'}</strong><time>{formatDateTime(item.created_at)}</time></div><p>{item.body}</p></div>
+    </article>
+  );
+  const fieldLabels = {
+    workflow_state_id: 'status',
+    assignee_user_id: 'assignee',
+    cycle_id: 'cycle',
+    due_date: 'due date',
+    label_ids: 'labels',
+  };
+  const fieldNames = Object.keys(item.changes?.fields || {}).map((field) => fieldLabels[field] || field.replaceAll('_', ' '));
+  const message = item.event_type === 'issue.created'
+    ? 'created this issue'
+    : item.event_type === 'issue.updated'
+      ? `updated ${fieldNames.join(', ') || 'the issue'}`
+      : item.event_type.replaceAll('.', ' ');
+  return (
+    <article className="activity-item event-item">
+      <span className="event-dot" />
+      <div><div className="activity-byline"><strong>{item.actor_name || 'System'}</strong><span>{message}</span><time>{formatDateTime(item.created_at)}</time></div></div>
+    </article>
+  );
+}
+
+function Metric({ label, value }) { return <div className="metric"><span>{label}</span><strong>{value}</strong></div>; }
+function StateBadge({ name }) { return <span className={`state-badge state-${name.toLowerCase().replaceAll(' ', '-')}`}>{name}</span>; }
+function EmptyState({ title, body, action }) { return <section className="empty-panel large-panel"><h2>{title}</h2><p>{body}</p><button className="primary" onClick={action}>Get started</button></section>; }
+
+function WorkspaceSwitcher({ open, onToggle, workspaces, selected, onSelect, onCreate }) {
+  return <div className="workspace-switcher">
+    <button className={`workspace-trigger ${open ? 'open' : ''}`} onClick={onToggle} aria-expanded={open}>
+      <span className="workspace-avatar">{selected?.name?.slice(0, 1).toUpperCase() || 'W'}</span>
+      <span className="workspace-copy"><strong>{selected?.name || 'Select workspace'}</strong><small>{selected?.my_role || 'Workspace'}</small></span>
+      <Icon name="chevron" />
+    </button>
+    {open && <div className="workspace-menu">
+      <div className="menu-label">Workspaces</div>
+      {workspaces.map((workspace) => <button key={workspace.id} className={workspace.id === selected?.id ? 'selected' : ''} onClick={() => onSelect(workspace.id)}><span className="workspace-avatar small">{workspace.name.slice(0, 1).toUpperCase()}</span><span>{workspace.name}</span>{workspace.id === selected?.id && <Icon name="check" />}</button>)}
+      <div className="menu-separator" />
+      <button onClick={onCreate}><span className="menu-add"><Icon name="plus" /></span><span>Create workspace</span></button>
+    </div>}
+  </div>;
+}
+
+function Icon({ name }) {
+  const paths = {
+    plus: <path d="M12 5v14M5 12h14" />,
+    chevron: <path d="m9 18 6-6-6-6" />,
+    check: <path d="m5 12 4 4L19 6" />,
+    overview: <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>,
+    issues: <><circle cx="12" cy="12" r="8" /><path d="M12 8v5M12 16h.01" /></>,
+    cycles: <><path d="M20 11a8 8 0 0 0-14.9-4M4 5v4h4" /><path d="M4 13a8 8 0 0 0 14.9 4M20 19v-4h-4" /></>,
+    projects: <><path d="M4 7h6l2 2h8v10H4z" /><path d="M4 7V5h6l2 2" /></>,
+    views: <><path d="M4 5h16v14H4z" /><path d="M9 5v14M9 10h11" /></>,
+    settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></>,
+    logout: <><path d="M10 5H5v14h5M14 8l4 4-4 4M18 12H9" /></>,
+  };
+  return <svg className="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
