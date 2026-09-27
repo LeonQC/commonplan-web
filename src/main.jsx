@@ -92,6 +92,11 @@ function App() {
   const [issues, setIssues] = useState([]);
   const [projects, setProjects] = useState([]);
   const [members, setMembers] = useState([]);
+  const [savedViews, setSavedViews] = useState([]);
+  const [viewIssues, setViewIssues] = useState([]);
+  const [viewForm, setViewForm] = useState({ name: '', visibility: 'private' });
+  const [inbox, setInbox] = useState({ unread_count: 0, notifications: [] });
+  const [myIssues, setMyIssues] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [projectForm, setProjectForm] = useState({ name: '', summary: '', description: '', status: 'planned', lead_user_id: '', target_date: '' });
@@ -198,6 +203,18 @@ function App() {
       const suffix = params.toString() ? `?${params}` : '';
       setSummaryData(await request(`/api/v1/workspaces/${selectedWorkspaceId}/teams/${selectedTeamId}/summary${suffix}`));
     } finally { setSummaryLoading(false); }
+  }
+
+  async function loadViews() {
+    setSavedViews(await request(`/api/v1/workspaces/${workspaceId}/views`));
+  }
+
+  async function loadInbox() {
+    setInbox(await request(`/api/v1/me/inbox?workspace_id=${workspaceId}`));
+  }
+
+  async function loadMyIssues() {
+    setMyIssues(await request(`/api/v1/me/issues?workspace_id=${workspaceId}`));
   }
 
   function applySummaryFilters(changes) {
@@ -312,6 +329,13 @@ function App() {
       loadSummary(workspaceId, teamId).catch((error) => setStatus(error.message));
     }
   }, [currentUser, workspaceId, teamId, section, summaryFilters]);
+
+  useEffect(() => {
+    if (!currentUser || !workspaceId) return;
+    if (section === 'Views') loadViews().catch((error) => setStatus(error.message));
+    if (section === 'Inbox') loadInbox().catch((error) => setStatus(error.message));
+    if (section === 'My Issues') loadMyIssues().catch((error) => setStatus(error.message));
+  }, [currentUser, workspaceId, section]);
 
   useEffect(() => {
     if (!currentUser || !issueRoute) return;
@@ -589,7 +613,7 @@ function App() {
     if (!selectedIssue || !commentBody.trim()) return;
     setBusy(true);
     try {
-      await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/collaboration/comments`, {
+      await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/comments`, {
         method: 'POST', body: JSON.stringify({ body: commentBody }),
       });
       setCommentBody('');
@@ -639,6 +663,38 @@ function App() {
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
+  async function createSavedView(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const filterSpec = Object.fromEntries(Object.entries(summaryFilters).filter(([, value]) => value !== ''));
+      filterSpec.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      await request(`/api/v1/workspaces/${workspaceId}/views`, { method: 'POST', body: JSON.stringify({ ...viewForm, team_id: teamId, filter_spec: filterSpec }) });
+      setViewForm({ name: '', visibility: 'private' });
+      await loadViews();
+      setStatus('View saved');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function runSavedView(view) {
+    setViewIssues(await request(`/api/v1/workspaces/${workspaceId}/views/${view.id}/issues`));
+  }
+
+  async function deleteSavedView(viewId) {
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/views/${viewId}`, { method: 'DELETE' });
+      setViewIssues([]);
+      await loadViews();
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function markNotificationRead(notification) {
+    await request(`/api/v1/me/inbox/${notification.id}/read`, { method: 'POST' });
+    await loadInbox();
+    if (notification.payload?.issue_key) openIssue({ key: notification.payload.issue_key, workspace_id: notification.workspace_id });
+  }
+
   if (sessionLoading) return <div className="center-screen"><div className="spinner" />Loading CommonPlan…</div>;
   if (!currentUser) return (
     <main className="auth-shell">
@@ -666,7 +722,9 @@ function App() {
     { name: 'Issues', icon: 'issues' },
     { name: 'Cycles', icon: 'cycles' },
     { name: 'Projects', icon: 'projects' },
+    { name: 'My Issues', icon: 'issues' },
     { name: 'Views', icon: 'views' },
+    { name: 'Inbox', icon: 'inbox' },
     { name: 'Settings', icon: 'settings' },
   ];
 
@@ -804,6 +862,18 @@ function App() {
         <div className="issue-board">{workflowStates.map((state) => <div className="state-group" key={state.id}><div className="state-heading"><StateBadge name={state.name} /><span>{issues.filter((issue) => issue.workflow_state_id === state.id).length}</span></div>{issues.filter((issue) => issue.workflow_state_id === state.id).map((issue) => <button key={issue.id} className="issue-row" onClick={() => openIssue(issue)}><span className="priority-dot" data-priority={issue.priority} /><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><span className="row-meta">{issue.labels.map((label) => label.name).join(', ')}</span></button>)}</div>)}</div>
         <div className="settings-grid"><form className="mini-card" onSubmit={createLabel}><h3>Create label</h3><div className="inline-fields"><input placeholder="Label name" value={labelForm.name} onChange={(e) => setLabelForm({ ...labelForm, name: e.target.value })} required /><input className="color-input" type="color" value={labelForm.color} onChange={(e) => setLabelForm({ ...labelForm, color: e.target.value })} /><button className="secondary">Add</button></div></form><div className="mini-card"><h3>Team labels</h3><div className="label-row">{labels.map((label) => <span className="label-pill" key={label.id} style={{ '--label-color': label.color }}>{label.name}</span>)}{!labels.length && <span className="muted">No labels</span>}</div></div></div>
       </section>
+    );
+
+    if (section === 'My Issues') return (
+      <section className="personal-list-page"><div className="toolbar"><div><strong>My Issues</strong><span>Assigned to you across accessible teams in this workspace.</span></div><span className="count-badge">{myIssues.length}</span></div><div className="personal-list">{myIssues.map((issue) => <button className="issue-row" key={issue.id} onClick={() => openIssue(issue)}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.workflow_state_name} /></button>)}{!myIssues.length && <div className="empty-panel">Nothing is assigned to you.</div>}</div></section>
+    );
+
+    if (section === 'Views') return (
+      <section className="views-page"><div className="toolbar"><div><strong>Saved Views</strong><span>Reuse the same validated filters as Team Summary.</span></div></div><div className="views-layout"><div className="saved-view-list">{savedViews.map((view) => <article key={view.id}><button className="saved-view-main" onClick={() => runSavedView(view)}><span className="view-icon">V</span><div><strong>{view.name}</strong><small>{view.visibility} · {view.team_id === teamId ? selectedTeam.name : 'Another team'}</small></div></button>{view.owner_user_id === currentUser.id && <button className="view-delete" onClick={() => deleteSavedView(view.id)}>×</button>}</article>)}{!savedViews.length && <div className="inline-empty">No saved views yet.</div>}</div><form className="mini-card saved-view-form" onSubmit={createSavedView}><h3>Save current Summary filters</h3><p>Open Summary and set filters first, then save them here.</p><label>Name<input value={viewForm.name} onChange={(event) => setViewForm({ ...viewForm, name: event.target.value })} required /></label><label>Visibility<select value={viewForm.visibility} onChange={(event) => setViewForm({ ...viewForm, visibility: event.target.value })}><option value="private">Private</option><option value="team">Team</option><option value="workspace">Workspace</option></select></label><button className="primary" disabled={busy}>Save view</button></form></div>{viewIssues.length > 0 && <section className="view-results"><h2>View results <span>{viewIssues.length}</span></h2>{viewIssues.map((issue) => <button className="issue-row" key={issue.id} onClick={() => openIssue(issue)}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.status} /></button>)}</section>}</section>
+    );
+
+    if (section === 'Inbox') return (
+      <section className="inbox-page"><div className="toolbar"><div><strong>Inbox</strong><span>Mentions and activity from issues you can still access.</span></div><span className="unread-badge">{inbox.unread_count} unread</span></div><div className="inbox-list">{inbox.notifications.map((notification) => <button key={notification.id} className={notification.read_at ? 'read' : 'unread'} onClick={() => markNotificationRead(notification)}><span className="notification-dot" /><div><strong>{notification.payload?.issue_key || 'CommonPlan'} · {notification.kind.replaceAll('_', ' ')}</strong><p>{notification.kind === 'comment' ? 'A teammate mentioned you or commented on a watched issue.' : 'Activity occurred on an issue you watch.'}</p><time>{formatDateTime(notification.created_at)}</time></div></button>)}{!inbox.notifications.length && <div className="empty-panel">Your inbox is clear.</div>}</div></section>
     );
 
     if (section === 'Projects' && selectedProject) {
@@ -994,6 +1064,7 @@ function Icon({ name }) {
     cycles: <><path d="M20 11a8 8 0 0 0-14.9-4M4 5v4h4" /><path d="M4 13a8 8 0 0 0 14.9 4M20 19v-4h-4" /></>,
     projects: <><path d="M4 7h6l2 2h8v10H4z" /><path d="M4 7V5h6l2 2" /></>,
     views: <><path d="M4 5h16v14H4z" /><path d="M9 5v14M9 10h11" /></>,
+    inbox: <><path d="M4 5h16v14H4z" /><path d="m4 14 4-4h8l4 4M9 14h6" /></>,
     settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></>,
     logout: <><path d="M10 5H5v14h5M14 8l4 4-4 4M18 12H9" /></>,
   };
