@@ -85,6 +85,7 @@ function App() {
   const [summaryData, setSummaryData] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryFilters, setSummaryFilters] = useState(() => summaryFiltersFromUrl());
+  const [summaryFiltersOpen, setSummaryFiltersOpen] = useState(false);
   const [workflowStates, setWorkflowStates] = useState([]);
   const [cycles, setCycles] = useState([]);
   const [labels, setLabels] = useState([]);
@@ -637,24 +638,42 @@ function App() {
       if (summaryLoading && !summaryData) return <section className="issue-detail-loading"><div className="spinner" />Loading team summary…</section>;
       const data = summaryData;
       const maxTrend = Math.max(1, ...(data?.trend?.buckets || []).flatMap((bucket) => [bucket.created, bucket.completed]));
+      const activeSummaryFilters = SUMMARY_FILTER_KEYS.filter((key) => summaryFilters[key]);
+      const summaryFilterName = { status: 'Status', priority: 'Priority', project: 'Project', cycle: 'Cycle', assignee: 'Assignee', label: 'Label', due: 'Due', ownership: 'Ownership', date_from: 'From', date_to: 'Through', include_archived: 'Archive' };
+      const summaryFilterValue = (key, value) => {
+        if (key === 'priority') return ['No priority', 'Low', 'Medium', 'High', 'Urgent'][Number(value)] || value;
+        if (key === 'project') return value === 'none' ? 'No project' : projects.find((item) => item.id === value)?.name || value;
+        if (key === 'cycle') return value === 'none' ? 'No cycle' : cycles.find((item) => item.id === value)?.name || value;
+        if (key === 'assignee') return value === 'unassigned' ? 'Unassigned' : members.find((item) => String(item.user_id) === value)?.name || value;
+        if (key === 'label') return labels.find((item) => item.id === value)?.name || value;
+        if (key === 'include_archived') return 'Included';
+        return value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+      };
       return (
         <section className="summary-page">
-          <div className="summary-toolbar">
-            <div><strong>Team Summary</strong><span>Every view uses the same authorized issue filter.</span></div>
-            <button className="secondary" onClick={resetSummaryFilters}>Reset filters</button>
-          </div>
-          <div className="summary-filters">
-            <label>Status<select value={summaryFilters.status} onChange={(event) => applySummaryFilters({ status: event.target.value })}><option value="">All statuses</option><option value="backlog">Backlog</option><option value="todo">Todo</option><option value="in_progress">In progress</option><option value="done">Done</option><option value="canceled">Canceled</option></select></label>
-            <label>Priority<select value={summaryFilters.priority} onChange={(event) => applySummaryFilters({ priority: event.target.value })}><option value="">All priorities</option>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label>
-            <label>Project<select value={summaryFilters.project} onChange={(event) => applySummaryFilters({ project: event.target.value })}><option value="">All projects</option><option value="none">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
-            <label>Cycle<select value={summaryFilters.cycle} onChange={(event) => applySummaryFilters({ cycle: event.target.value })}><option value="">All cycles</option><option value="none">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label>
-            <label>Assignee<select value={summaryFilters.assignee} onChange={(event) => applySummaryFilters({ assignee: event.target.value })}><option value="">All assignees</option><option value="unassigned">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label>
-            <label>Label<select value={summaryFilters.label} onChange={(event) => applySummaryFilters({ label: event.target.value })}><option value="">All labels</option>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select></label>
-            <label>Due<select value={summaryFilters.due} onChange={(event) => applySummaryFilters({ due: event.target.value })}><option value="">Any due date</option><option value="overdue">Overdue</option><option value="due_soon">Due soon</option><option value="not_due">Not due</option><option value="no_due_date">No due date</option></select></label>
-            <label>Ownership<select value={summaryFilters.ownership} onChange={(event) => applySummaryFilters({ ownership: event.target.value })}><option value="">All team issues</option><option value="mine">My issues</option><option value="unassigned">Unassigned</option></select></label>
-            <label>Created from<input type="date" value={summaryFilters.date_from} onChange={(event) => applySummaryFilters({ date_from: event.target.value })} /></label>
-            <label>Created through<input type="date" value={summaryFilters.date_to} onChange={(event) => applySummaryFilters({ date_to: event.target.value })} /></label>
-            <label>Archive<select value={summaryFilters.include_archived} onChange={(event) => applySummaryFilters({ include_archived: event.target.value })}><option value="">Active issues only</option><option value="true">Include archived</option></select></label>
+          <div className="summary-filter-shell">
+            <div className="summary-toolbar">
+              <div><strong>Team Summary</strong><span>Health, workload, and momentum for {selectedTeam.name}.</span></div>
+              <button className={`summary-filter-trigger ${summaryFiltersOpen ? 'active' : ''}`} aria-expanded={summaryFiltersOpen} onClick={() => setSummaryFiltersOpen((open) => !open)}><span className="filter-glyph">≡</span> Filter{activeSummaryFilters.length > 0 && <b>{activeSummaryFilters.length}</b>}<span className="filter-chevron">⌄</span></button>
+            </div>
+            {activeSummaryFilters.length > 0 && <div className="summary-filter-chips"><span>Filtered by</span>{activeSummaryFilters.map((key) => <button key={key} onClick={() => applySummaryFilters({ [key]: '' })}><small>{summaryFilterName[key]}</small>{summaryFilterValue(key, summaryFilters[key])}<b>×</b></button>)}<button className="clear-filter-chips" onClick={resetSummaryFilters}>Clear all</button></div>}
+            {summaryFiltersOpen && <div className="summary-filter-popover">
+              <div className="summary-filter-heading"><div><strong>Filter summary</strong><span>Results update as you choose.</span></div><button aria-label="Close filters" onClick={() => setSummaryFiltersOpen(false)}>×</button></div>
+              <div className="summary-filters">
+                <label>Status<select value={summaryFilters.status} onChange={(event) => applySummaryFilters({ status: event.target.value })}><option value="">All statuses</option><option value="backlog">Backlog</option><option value="todo">Todo</option><option value="in_progress">In progress</option><option value="done">Done</option><option value="canceled">Canceled</option></select></label>
+                <label>Priority<select value={summaryFilters.priority} onChange={(event) => applySummaryFilters({ priority: event.target.value })}><option value="">All priorities</option>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label>
+                <label>Project<select value={summaryFilters.project} onChange={(event) => applySummaryFilters({ project: event.target.value })}><option value="">All projects</option><option value="none">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+                <label>Cycle<select value={summaryFilters.cycle} onChange={(event) => applySummaryFilters({ cycle: event.target.value })}><option value="">All cycles</option><option value="none">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label>
+                <label>Assignee<select value={summaryFilters.assignee} onChange={(event) => applySummaryFilters({ assignee: event.target.value })}><option value="">All assignees</option><option value="unassigned">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label>
+                <label>Label<select value={summaryFilters.label} onChange={(event) => applySummaryFilters({ label: event.target.value })}><option value="">All labels</option>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select></label>
+                <label>Due<select value={summaryFilters.due} onChange={(event) => applySummaryFilters({ due: event.target.value })}><option value="">Any due date</option><option value="overdue">Overdue</option><option value="due_soon">Due soon</option><option value="not_due">Not due</option><option value="no_due_date">No due date</option></select></label>
+                <label>Ownership<select value={summaryFilters.ownership} onChange={(event) => applySummaryFilters({ ownership: event.target.value })}><option value="">All team issues</option><option value="mine">My issues</option><option value="unassigned">Unassigned</option></select></label>
+                <label>Created from<input type="date" value={summaryFilters.date_from} onChange={(event) => applySummaryFilters({ date_from: event.target.value })} /></label>
+                <label>Created through<input type="date" value={summaryFilters.date_to} onChange={(event) => applySummaryFilters({ date_to: event.target.value })} /></label>
+                <label>Archive<select value={summaryFilters.include_archived} onChange={(event) => applySummaryFilters({ include_archived: event.target.value })}><option value="">Active issues only</option><option value="true">Include archived</option></select></label>
+              </div>
+              <div className="summary-filter-footer"><button className="tertiary" onClick={resetSummaryFilters} disabled={!activeSummaryFilters.length}>Clear all</button><button className="primary" onClick={() => setSummaryFiltersOpen(false)}>Done</button></div>
+            </div>}
           </div>
           {!data ? <div className="empty-panel">Summary is unavailable.</div> : <>
             <div className="summary-metrics">{Object.entries({ total: 'Matching', open: 'Open', in_progress: 'In progress', completed: 'Completed', overdue: 'Overdue', unassigned: 'Unassigned' }).map(([key, label]) => <Metric key={key} label={label} value={data.headline_metrics[key]} />)}</div>
