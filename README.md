@@ -12,6 +12,8 @@ pnpm dev
 
 The development server runs at <http://localhost:5173>. Start the companion [`commonplan-api`](https://github.com/LeonQC/commonplan-api) stack first so API and authentication endpoints are available at <http://localhost:8000>.
 
+GitHub pull-request links and integration health are supplied by the API. For local webhook forwarding and repository configuration, use the API repository's `docs/github-integration-local.md` guide.
+
 ## Build
 
 ```bash
