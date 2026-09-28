@@ -102,8 +102,10 @@ function App() {
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [issueRoute, setIssueRoute] = useState(() => parseIssueRoute());
   const [issueActivity, setIssueActivity] = useState([]);
+  const [issueCollaboration, setIssueCollaboration] = useState({ watching: false, watchers: [], sub_issues: [] });
   const [issueDraft, setIssueDraft] = useState({ title: '', description: '' });
   const [commentBody, setCommentBody] = useState('');
+  const [subIssueTitle, setSubIssueTitle] = useState('');
   const [issueLoading, setIssueLoading] = useState(false);
   const [showIssueForm, setShowIssueForm] = useState(false);
   const [issueForm, setIssueForm] = useState({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', project_id: '', milestone_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
@@ -215,13 +217,15 @@ function App() {
     if (!selectedWorkspaceId || !key) return;
     setIssueLoading(true);
     try {
-      const [issue, activity] = await Promise.all([
+      const [issue, activity, collaboration] = await Promise.all([
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}`),
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/activity`),
+        request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/collaboration`),
       ]);
       setSelectedIssue(issue);
       setIssueDraft({ title: issue.title, description: issue.description || '' });
       setIssueActivity(activity);
+      setIssueCollaboration(collaboration);
       setSection('Issues');
       if (issue.team_id !== teamId) setTeamId(issue.team_id);
     } finally {
@@ -244,6 +248,7 @@ function App() {
     setIssueRoute(null);
     setSelectedIssue(null);
     setIssueActivity([]);
+    setIssueCollaboration({ watching: false, watchers: [], sub_issues: [] });
   }
 
   function showSection(nextSection) {
@@ -584,13 +589,53 @@ function App() {
     if (!selectedIssue || !commentBody.trim()) return;
     setBusy(true);
     try {
-      await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/comments`, {
+      await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/collaboration/comments`, {
         method: 'POST', body: JSON.stringify({ body: commentBody }),
       });
       setCommentBody('');
       const activity = await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/activity`);
       setIssueActivity(activity);
+      setIssueCollaboration(await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/collaboration`));
       setStatus('Comment added');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function updateComment(commentId, body) {
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/comments/${commentId}`, { method: 'PATCH', body: JSON.stringify({ body }) });
+      setIssueActivity(await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/activity`));
+      setStatus('Comment updated');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function deleteComment(commentId) {
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/comments/${commentId}`, { method: 'DELETE' });
+      setIssueActivity(await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/activity`));
+      setStatus('Comment deleted');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function toggleWatch() {
+    setBusy(true);
+    try {
+      const data = await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/watch`, { method: issueCollaboration.watching ? 'DELETE' : 'PUT' });
+      setIssueCollaboration(data);
+      setStatus(data.watching ? 'Watching issue' : 'Stopped watching');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function createSubIssue(event) {
+    event.preventDefault();
+    if (!subIssueTitle.trim()) return;
+    setBusy(true);
+    try {
+      const created = await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/sub-issues`, { method: 'POST', body: JSON.stringify({ title: subIssueTitle, label_ids: [] }) });
+      setSubIssueTitle('');
+      setIssueCollaboration(await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/collaboration`));
+      setStatus(`Created ${created.key}`);
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
@@ -720,17 +765,22 @@ function App() {
                 <div className="activity-heading"><div><h2>Activity</h2><p>Comments and changes are recorded chronologically.</p></div><span>{issueActivity.filter((item) => item.event_type !== 'comment.created').length}</span></div>
                 <form className="comment-composer" onSubmit={addComment}>
                   <span className="avatar small-avatar">{currentUser.name.slice(0, 1).toUpperCase()}</span>
-                  <textarea placeholder="Leave a comment…" value={commentBody} onChange={(event) => setCommentBody(event.target.value)} />
+                  <div className="comment-entry"><textarea placeholder="Leave a comment… Use @email to mention a teammate." value={commentBody} onChange={(event) => setCommentBody(event.target.value)} /><div className="mention-shortcuts">{members.filter((member) => member.user_id !== currentUser.id).map((member) => <button type="button" key={member.user_id} onClick={() => setCommentBody(`${commentBody}${commentBody && !commentBody.endsWith(' ') ? ' ' : ''}@${member.email} `)}>@{member.name.split(' ')[0]}</button>)}</div></div>
                   <button className="primary" disabled={busy || !commentBody.trim()}>Comment</button>
                 </form>
                 <div className="activity-list">
-                  {issueActivity.filter((item) => item.event_type !== 'comment.created').map((item) => <ActivityItem key={`${item.kind}-${item.id}`} item={item} />)}
+                  {issueActivity.filter((item) => item.event_type !== 'comment.created').map((item) => <ActivityItem key={`${item.kind}-${item.id}`} item={item} currentUser={currentUser} onUpdate={updateComment} onDelete={deleteComment} />)}
                   {!issueActivity.length && <div className="inline-empty">No activity yet.</div>}
                 </div>
               </section>
             </div>
 
             <aside className="issue-properties-card">
+              <section className="collaboration-panel">
+                <div className="collaboration-heading"><div><h2>Collaboration</h2><span>{issueCollaboration.watchers.length} watching</span></div><button className={issueCollaboration.watching ? 'watching' : ''} onClick={toggleWatch} disabled={busy}>{issueCollaboration.watching ? 'Watching' : 'Watch'}</button></div>
+                <div className="watcher-row">{issueCollaboration.watchers.map((watcher) => <span key={watcher.user_id} title={`${watcher.name} · ${watcher.reason}`}>{watcher.name.slice(0, 1).toUpperCase()}</span>)}{!issueCollaboration.watchers.length && <small>No watchers yet.</small>}</div>
+                <div className="sub-issues"><h3>Sub-issues <span>{issueCollaboration.sub_issues.length}</span></h3>{issueCollaboration.sub_issues.map((issue) => <button key={issue.id} onClick={() => openIssue(issue)}><span>{issue.key}</span><strong>{issue.title}</strong></button>)}<form onSubmit={createSubIssue}><input placeholder="Add a sub-issue…" value={subIssueTitle} onChange={(event) => setSubIssueTitle(event.target.value)} /><button disabled={busy || !subIssueTitle.trim()}>+</button></form></div>
+              </section>
               <div className="properties-heading"><h2>Properties</h2><span>Changes save immediately</span></div>
               <label>Status<select value={selectedIssue.workflow_state_id} onChange={(event) => updateIssue({ workflow_state_id: event.target.value })} disabled={busy}>{workflowStates.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label>
               <label>Priority<select value={selectedIssue.priority} onChange={(event) => updateIssue({ priority: Number(event.target.value) })} disabled={busy}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label>
@@ -882,12 +932,14 @@ function SummaryDistribution({ title, rows, labelKey, valueKey = 'count', suffix
   return <section className="summary-card distribution-card"><div className="summary-card-heading"><div><h2>{title}</h2><p>Select a row to filter the full summary.</p></div></div><div className="distribution-list">{rows.map((row, index) => <button key={`${row[labelKey]}-${index}`} onClick={() => onSelect(row)}><div><strong>{row[labelKey]}</strong><span>{row[valueKey]}{suffix}</span></div><i><span style={{ width: `${row[valueKey] / max * 100}%` }} /></i></button>)}{!rows.length && <div className="summary-empty">No matching data.</div>}</div></section>;
 }
 
-function ActivityItem({ item }) {
+function ActivityItem({ item, currentUser, onUpdate, onDelete }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(item.body || '');
   const initial = (item.actor_name || 'S').slice(0, 1).toUpperCase();
   if (item.kind === 'comment') return (
     <article className="activity-item comment-item">
       <span className="avatar small-avatar">{initial}</span>
-      <div><div className="activity-byline"><strong>{item.actor_name || 'Former member'}</strong><time>{formatDateTime(item.created_at)}</time></div><p>{item.body}</p></div>
+      <div><div className="activity-byline"><strong>{item.actor_name || 'Former member'}</strong><time>{formatDateTime(item.created_at)}{item.edited_at ? ' · edited' : ''}</time>{item.actor_user_id === currentUser?.id && <span className="comment-actions"><button onClick={() => setEditing(!editing)}>{editing ? 'Cancel' : 'Edit'}</button><button onClick={() => onDelete(item.id)}>Delete</button></span>}</div>{editing ? <form className="comment-editor" onSubmit={(event) => { event.preventDefault(); onUpdate(item.id, draft); setEditing(false); }}><textarea value={draft} onChange={(event) => setDraft(event.target.value)} /><button className="primary" disabled={!draft.trim()}>Save</button></form> : <p>{item.body}</p>}</div>
     </article>
   );
   const fieldLabels = {

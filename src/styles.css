@@ -308,6 +308,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .activity-heading > span { display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: #f0f0f3; color: #7f818c; font-size: 9px; }
 .comment-composer { grid-template-columns: 28px minmax(0, 1fr) auto; align-items: start; gap: 9px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
 .comment-composer textarea { min-height: 74px; }
+.comment-entry { display: grid; gap: 6px; }
+.mention-shortcuts { display: flex; flex-wrap: wrap; gap: 5px; }
+.mention-shortcuts button { padding: 3px 6px; border: 1px solid #e4e3eb; border-radius: 5px; background: #fafafe; color: #7774de; font-size: 8px; }
 .small-avatar { width: 28px; height: 28px; font-size: 9px; }
 .comment-composer .primary { align-self: end; }
 .activity-list { padding: 5px 20px 12px; }
@@ -317,6 +320,29 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .activity-byline strong { color: #42434c; font-weight: 680; }
 .activity-byline time { margin-left: auto; color: #a0a2ab; font-size: 8px; }
 .comment-item p { margin: 5px 0 0; color: #555762; font-size: 11px; line-height: 1.6; white-space: pre-wrap; }
+.comment-actions { display: inline-flex; gap: 6px; margin-left: auto; }
+.comment-actions button { padding: 0; border: 0; background: transparent; color: #858792; font-size: 8px; }
+.comment-actions button:hover { color: var(--accent); }
+.comment-editor { display: grid; gap: 7px; margin-top: 7px; }
+.comment-editor textarea { min-height: 70px; }
+.comment-editor .primary { justify-self: end; }
+.collaboration-panel { display: grid; gap: 12px; margin: -18px -18px 18px; padding: 16px 18px; border-bottom: 1px solid var(--line); background: #fbfbfd; }
+.collaboration-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.collaboration-heading h2 { margin: 0; color: #3c3d46; font-size: 11px; }
+.collaboration-heading span { color: #9899a3; font-size: 8px; }
+.collaboration-heading button { min-height: 28px; padding: 0 9px; border: 1px solid #dedee6; border-radius: 6px; background: white; color: #62636d; font-size: 9px; }
+.collaboration-heading button.watching { border-color: #c9c7ff; background: #f4f3ff; color: var(--accent); }
+.watcher-row { display: flex; align-items: center; min-height: 24px; }
+.watcher-row > span { display: grid; place-items: center; width: 23px; height: 23px; margin-right: -5px; border: 2px solid white; border-radius: 50%; background: #686be7; color: white; font-size: 8px; }
+.watcher-row small { color: #999aa4; font-size: 8px; }
+.sub-issues { display: grid; gap: 6px; }
+.sub-issues h3 { display: flex; justify-content: space-between; margin: 0; color: #62636d; font-size: 9px; }
+.sub-issues > button { display: grid; grid-template-columns: auto 1fr; gap: 7px; padding: 6px 0; border: 0; border-bottom: 1px solid #eeeeF2; background: transparent; text-align: left; }
+.sub-issues > button span { color: #999aa4; font-size: 8px; }
+.sub-issues > button strong { overflow: hidden; color: #50515b; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.sub-issues form { display: grid; grid-template-columns: 1fr 28px; gap: 5px; }
+.sub-issues form input { min-height: 29px; font-size: 9px; }
+.sub-issues form button { border: 1px solid #dedee6; border-radius: 6px; background: white; color: var(--accent); }
 .event-item { grid-template-columns: 28px minmax(0, 1fr); align-items: center; }
 .event-dot { justify-self: center; width: 7px; height: 7px; border: 2px solid #aaa8fb; border-radius: 50%; background: white; }
 .issue-properties-card { position: sticky; top: 20px; display: grid; gap: 13px; padding: 18px; }
