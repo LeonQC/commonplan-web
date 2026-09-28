@@ -93,7 +93,10 @@ function App() {
   const [projects, setProjects] = useState([]);
   const [members, setMembers] = useState([]);
   const [savedViews, setSavedViews] = useState([]);
-  const [viewIssues, setViewIssues] = useState([]);
+  const [selectedViewId, setSelectedViewId] = useState('');
+  const [viewIssues, setViewIssues] = useState(null);
+  const [viewLoading, setViewLoading] = useState(false);
+  const [showViewForm, setShowViewForm] = useState(false);
   const [viewForm, setViewForm] = useState({ name: '', visibility: 'private' });
   const [inbox, setInbox] = useState({ unread_count: 0, notifications: [] });
   const [myIssues, setMyIssues] = useState([]);
@@ -208,8 +211,17 @@ function App() {
     } finally { setSummaryLoading(false); }
   }
 
-  async function loadViews() {
-    setSavedViews(await request(`/api/v1/workspaces/${workspaceId}/views`));
+  async function loadViews(preferredViewId = '') {
+    const data = await request(`/api/v1/workspaces/${workspaceId}/views`);
+    setSavedViews(data);
+    if (!data.length) {
+      setSelectedViewId('');
+      setViewIssues(null);
+      return;
+    }
+    const nextId = preferredViewId || (data.some((view) => view.id === selectedViewId) ? selectedViewId : data[0].id);
+    const nextView = data.find((view) => view.id === nextId) || data[0];
+    await runSavedView(nextView);
   }
 
   async function loadInbox() {
@@ -730,22 +742,33 @@ function App() {
     try {
       const filterSpec = Object.fromEntries(Object.entries(summaryFilters).filter(([, value]) => value !== ''));
       filterSpec.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-      await request(`/api/v1/workspaces/${workspaceId}/views`, { method: 'POST', body: JSON.stringify({ ...viewForm, team_id: teamId, filter_spec: filterSpec }) });
+      const created = await request(`/api/v1/workspaces/${workspaceId}/views`, { method: 'POST', body: JSON.stringify({ ...viewForm, team_id: teamId, filter_spec: filterSpec }) });
       setViewForm({ name: '', visibility: 'private' });
-      await loadViews();
+      setShowViewForm(false);
+      await loadViews(created.id);
       setStatus('View saved');
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
   async function runSavedView(view) {
-    setViewIssues(await request(`/api/v1/workspaces/${workspaceId}/views/${view.id}/issues`));
+    setSelectedViewId(view.id);
+    setViewIssues(null);
+    setViewLoading(true);
+    try {
+      setViewIssues(await request(`/api/v1/workspaces/${workspaceId}/views/${view.id}/issues`));
+    } catch (error) {
+      setViewIssues([]);
+      setStatus(error.message);
+    } finally {
+      setViewLoading(false);
+    }
   }
 
   async function deleteSavedView(viewId) {
     setBusy(true);
     try {
       await request(`/api/v1/workspaces/${workspaceId}/views/${viewId}`, { method: 'DELETE' });
-      setViewIssues([]);
+      setViewIssues(null);
       await loadViews();
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
@@ -818,7 +841,7 @@ function App() {
           <div className="summary-filter-shell">
             <div className="summary-toolbar">
               <div><strong>Team Summary</strong><span>Health, workload, and momentum for {selectedTeam.name}.</span></div>
-              <button className={`summary-filter-trigger ${summaryFiltersOpen ? 'active' : ''}`} aria-expanded={summaryFiltersOpen} onClick={() => setSummaryFiltersOpen((open) => !open)}><span className="filter-glyph">≡</span> Filter{activeSummaryFilters.length > 0 && <b>{activeSummaryFilters.length}</b>}<span className="filter-chevron">⌄</span></button>
+              <div className="summary-toolbar-actions"><button className="secondary save-view-trigger" onClick={() => { setShowViewForm(true); showSection('Views'); }}>Save as view</button><button className={`summary-filter-trigger ${summaryFiltersOpen ? 'active' : ''}`} aria-expanded={summaryFiltersOpen} onClick={() => setSummaryFiltersOpen((open) => !open)}><span className="filter-glyph">≡</span> Filter{activeSummaryFilters.length > 0 && <b>{activeSummaryFilters.length}</b>}<span className="filter-chevron">⌄</span></button></div>
             </div>
             {activeSummaryFilters.length > 0 && <div className="summary-filter-chips"><span>Filtered by</span>{activeSummaryFilters.map((key) => <button key={key} onClick={() => applySummaryFilters({ [key]: '' })}><small>{summaryFilterName[key]}</small>{summaryFilterValue(key, summaryFilters[key])}<b>×</b></button>)}<button className="clear-filter-chips" onClick={resetSummaryFilters}>Clear all</button></div>}
             {summaryFiltersOpen && <div className="summary-filter-popover">
@@ -929,9 +952,31 @@ function App() {
       <section className="personal-list-page"><div className="toolbar"><div><strong>My Issues</strong><span>Assigned to you across accessible teams in this workspace.</span></div><span className="count-badge">{myIssues.length}</span></div><div className="personal-list">{myIssues.map((issue) => <button className="issue-row" key={issue.id} onClick={() => openIssue(issue)}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.workflow_state_name} /></button>)}{!myIssues.length && <div className="empty-panel">Nothing is assigned to you.</div>}</div></section>
     );
 
-    if (section === 'Views') return (
-      <section className="views-page"><div className="toolbar"><div><strong>Saved Views</strong><span>Reuse the same validated filters as Team Summary.</span></div></div><div className="views-layout"><div className="saved-view-list">{savedViews.map((view) => <article key={view.id}><button className="saved-view-main" onClick={() => runSavedView(view)}><span className="view-icon">V</span><div><strong>{view.name}</strong><small>{view.visibility} · {view.team_id === teamId ? selectedTeam.name : 'Another team'}</small></div></button>{view.owner_user_id === currentUser.id && <button className="view-delete" onClick={() => deleteSavedView(view.id)}>×</button>}</article>)}{!savedViews.length && <div className="inline-empty">No saved views yet.</div>}</div><form className="mini-card saved-view-form" onSubmit={createSavedView}><h3>Save current Summary filters</h3><p>Open Summary and set filters first, then save them here.</p><label>Name<input value={viewForm.name} onChange={(event) => setViewForm({ ...viewForm, name: event.target.value })} required /></label><label>Visibility<select value={viewForm.visibility} onChange={(event) => setViewForm({ ...viewForm, visibility: event.target.value })}><option value="private">Private</option><option value="team">Team</option><option value="workspace">Workspace</option></select></label><button className="primary" disabled={busy}>Save view</button></form></div>{viewIssues.length > 0 && <section className="view-results"><h2>View results <span>{viewIssues.length}</span></h2>{viewIssues.map((issue) => <button className="issue-row" key={issue.id} onClick={() => openIssue(issue)}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.status} /></button>)}</section>}</section>
-    );
+    if (section === 'Views') {
+      const selectedView = savedViews.find((view) => view.id === selectedViewId);
+      const filterName = { status: 'Status', priority: 'Priority', project: 'Project', cycle: 'Cycle', assignee: 'Assignee', label: 'Label', due: 'Due', ownership: 'Ownership', date_from: 'From', date_to: 'Through', include_archived: 'Archive' };
+      const filterValue = (key, value) => {
+        if (key === 'priority') return ['No priority', 'Low', 'Medium', 'High', 'Urgent'][Number(value)] || value;
+        if (key === 'project') return value === 'none' ? 'No project' : projects.find((item) => item.id === value)?.name || value;
+        if (key === 'cycle') return value === 'none' ? 'No cycle' : cycles.find((item) => item.id === value)?.name || value;
+        if (key === 'assignee') return value === 'unassigned' ? 'Unassigned' : members.find((item) => String(item.user_id) === String(value))?.name || value;
+        if (key === 'label') return labels.find((item) => item.id === value)?.name || value;
+        if (key === 'include_archived') return 'Included';
+        return String(value).replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+      };
+      const viewFilters = (view) => Object.entries(view?.filter_spec || {}).filter(([key, value]) => key !== 'timezone' && value !== '');
+      const currentFilters = Object.entries(summaryFilters).filter(([, value]) => value !== '');
+      return (
+        <section className="views-page">
+          <div className="toolbar views-toolbar"><div><strong>Saved Views</strong><span>Reusable live queries over the latest issues in this workspace.</span></div><button className="primary" onClick={() => setShowViewForm((open) => !open)}>{showViewForm ? 'Cancel' : '+ New view'}</button></div>
+          {showViewForm && <form className="saved-view-create" onSubmit={createSavedView}><div><span className="eyebrow">CURRENT SUMMARY FILTERS</span><h2>Save this issue view</h2><p>The view stays live—future issue changes automatically appear in its results.</p><div className="view-filter-chips">{currentFilters.map(([key, value]) => <span key={key}><small>{filterName[key] || key}</small>{filterValue(key, value)}</span>)}{!currentFilters.length && <span className="all-issues-chip">All team issues</span>}</div></div><div className="saved-view-fields"><label>Name<input autoFocus value={viewForm.name} onChange={(event) => setViewForm({ ...viewForm, name: event.target.value })} placeholder="e.g. My active work" required /></label><label>Visibility<select value={viewForm.visibility} onChange={(event) => setViewForm({ ...viewForm, visibility: event.target.value })}><option value="private">Private</option><option value="team">Team</option><option value="workspace">Workspace</option></select></label><button className="primary" disabled={busy}>Save view</button></div></form>}
+          <div className="view-workbench">
+            <aside className="saved-view-list"><div className="view-list-heading"><strong>Your views</strong><span>{savedViews.length}</span></div>{savedViews.map((view) => { const filters = viewFilters(view); return <article className={view.id === selectedViewId ? 'selected' : ''} key={view.id}><button className="saved-view-main" onClick={() => runSavedView(view)}><span className="view-icon">V</span><div><strong>{view.name}</strong><small>{view.visibility} · {view.team_id === teamId ? selectedTeam.name : 'Another team'}</small><div className="view-card-filters">{filters.slice(0, 2).map(([key, value]) => <span key={key}>{filterName[key] || key}: {filterValue(key, value)}</span>)}{!filters.length && <span>All team issues</span>}{filters.length > 2 && <span>+{filters.length - 2}</span>}</div></div></button></article>; })}{!savedViews.length && <div className="view-list-empty"><span className="view-icon">V</span><strong>No saved views yet</strong><p>Set filters in Summary, then save them for quick access.</p></div>}</aside>
+            <section className="view-detail">{selectedView ? <><header><div><span className="eyebrow">SAVED VIEW</span><h2>{selectedView.name}</h2><p>{selectedView.visibility} · {selectedView.team_id === teamId ? selectedTeam.name : 'Another team'}</p></div>{selectedView.owner_user_id === currentUser.id && <button className="danger-text" onClick={() => deleteSavedView(selectedView.id)}>Delete view</button>}</header><div className="view-query-summary"><strong>Filters</strong><div className="view-filter-chips">{viewFilters(selectedView).map(([key, value]) => <span key={key}><small>{filterName[key] || key}</small>{filterValue(key, value)}</span>)}{!viewFilters(selectedView).length && <span className="all-issues-chip">All team issues</span>}</div></div><div className="view-results-heading"><div><strong>Matching issues</strong><span>Live results using the saved filters.</span></div>{viewIssues && <b>{viewIssues.length}</b>}</div>{viewLoading || viewIssues === null ? <div className="view-loading"><div className="spinner" />Running saved view…</div> : viewIssues.length ? <div className="view-result-list">{viewIssues.map((issue) => <button className="issue-row" key={issue.id} onClick={() => openIssue(issue)}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.status} /></button>)}</div> : <div className="view-zero-state"><span>0</span><strong>No issues match this view</strong><p>The view is working, but its saved filters currently return no issues.</p></div>}</> : <div className="view-detail-empty"><span className="view-icon large">V</span><h2>Select a saved view</h2><p>Its filters and current issue results will appear here.</p></div>}</section>
+          </div>
+        </section>
+      );
+    }
 
     if (section === 'Inbox') return (
       <section className="inbox-page"><div className="toolbar"><div><strong>Inbox</strong><span>Mentions and activity from issues you can still access.</span></div><span className="unread-badge">{inbox.unread_count} unread</span></div><div className="inbox-list">{inbox.notifications.map((notification) => <button key={notification.id} className={notification.read_at ? 'read' : 'unread'} onClick={() => markNotificationRead(notification)}><span className="notification-dot" /><div><strong>{notification.payload?.issue_key || 'CommonPlan'} · {notification.kind.replaceAll('_', ' ')}</strong><p>{notification.kind === 'self_mention' ? 'You left yourself a reminder on this issue.' : notification.kind === 'comment' ? 'A teammate mentioned you or commented on a watched issue.' : 'Activity occurred on an issue you watch.'}</p><time>{formatDateTime(notification.created_at)}</time></div></button>)}{!inbox.notifications.length && <div className="empty-panel">Your inbox is clear.</div>}</div></section>
