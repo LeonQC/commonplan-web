@@ -258,8 +258,14 @@ function App() {
     window.history.pushState({}, '', `/workspaces/${route.workspaceId}/issues/${encodeURIComponent(route.key)}`);
     setIssueRoute(route);
     setSummaryRoute(null);
-    setSelectedIssue(issue);
-    setIssueDraft({ title: issue.title, description: issue.description || '' });
+    // Inbox, Summary, Saved Views, and activity rows carry intentionally small
+    // issue projections. Always load the canonical detail before rendering the
+    // editor instead of treating those projections as a complete IssueRead.
+    setSelectedIssue(null);
+    setIssueDraft({ title: '', description: '' });
+    setIssueActivity([]);
+    setIssueCollaboration({ watching: false, watchers: [], sub_issues: [] });
+    setIssueLoading(true);
     setSection('Issues');
   }
 
@@ -269,6 +275,7 @@ function App() {
     setSelectedIssue(null);
     setIssueActivity([]);
     setIssueCollaboration({ watching: false, watchers: [], sub_issues: [] });
+    setIssueLoading(false);
   }
 
   function showSection(nextSection) {
@@ -857,7 +864,7 @@ function App() {
     if (section === 'Issues' && issueRoute) {
       if (issueLoading && !selectedIssue) return <section className="issue-detail-loading"><div className="spinner" />Loading issue…</section>;
       if (!selectedIssue) return null;
-      const selectedLabelIds = selectedIssue.labels.map((label) => label.id);
+      const selectedLabelIds = (selectedIssue.labels || []).map((label) => label.id);
       return (
         <section className="issue-detail-page">
           <div className="issue-detail-topbar">
