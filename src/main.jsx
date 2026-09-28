@@ -73,7 +73,15 @@ function App() {
   const [cycles, setCycles] = useState([]);
   const [labels, setLabels] = useState([]);
   const [issues, setIssues] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [members, setMembers] = useState([]);
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [showProjectForm, setShowProjectForm] = useState(false);
+  const [projectForm, setProjectForm] = useState({ name: '', summary: '', description: '', status: 'planned', lead_user_id: '', target_date: '' });
+  const [projectDraft, setProjectDraft] = useState({ name: '', summary: '', description: '', status: 'planned', lead_user_id: '', target_date: '' });
+  const [objectiveForm, setObjectiveForm] = useState({ kind: 'objective', body: '' });
+  const [milestoneForm, setMilestoneForm] = useState({ name: '', description: '', target_date: '' });
+  const [projectUpdateForm, setProjectUpdateForm] = useState({ body: '', health: 'on_track' });
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [issueRoute, setIssueRoute] = useState(() => parseIssueRoute());
   const [issueActivity, setIssueActivity] = useState([]);
@@ -81,7 +89,7 @@ function App() {
   const [commentBody, setCommentBody] = useState('');
   const [issueLoading, setIssueLoading] = useState(false);
   const [showIssueForm, setShowIssueForm] = useState(false);
-  const [issueForm, setIssueForm] = useState({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
+  const [issueForm, setIssueForm] = useState({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', project_id: '', milestone_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
   const [cycleForm, setCycleForm] = useState({ name: '', starts_on: '', ends_on: '' });
   const [labelForm, setLabelForm] = useState({ name: '', color: '#6C6FF2' });
   const [status, setStatus] = useState('');
@@ -136,13 +144,14 @@ function App() {
   async function loadPlanning(selectedWorkspaceId, selectedTeamId) {
     if (!selectedWorkspaceId || !selectedTeamId) return;
     const base = `/api/v1/workspaces/${selectedWorkspaceId}/teams/${selectedTeamId}`;
-    const [nextOverview, nextStates, nextCycles, nextLabels, nextIssues, nextMembers] = await Promise.all([
+    const [nextOverview, nextStates, nextCycles, nextLabels, nextIssues, nextMembers, nextProjects] = await Promise.all([
       request(`${base}/overview`),
       request(`${base}/workflow-states`),
       request(`${base}/cycles`),
       request(`${base}/labels`),
       request(`${base}/issues`),
       request(`${base}/members`),
+      request(`${base}/projects`),
     ]);
     setOverview(nextOverview);
     setWorkflowStates(nextStates);
@@ -150,6 +159,14 @@ function App() {
     setLabels(nextLabels);
     setIssues(nextIssues);
     setMembers(nextMembers);
+    setProjects(nextProjects);
+    if (selectedProject) {
+      const refreshed = nextProjects.find((project) => project.id === selectedProject.id);
+      if (refreshed) {
+        setSelectedProject(refreshed);
+        setProjectDraft(projectToDraft(refreshed));
+      }
+    }
   }
 
   async function loadIssueDetail(selectedWorkspaceId, key) {
@@ -188,6 +205,7 @@ function App() {
 
   function showSection(nextSection) {
     if (issueRoute) closeIssue();
+    if (nextSection !== 'Projects') setSelectedProject(null);
     setSection(nextSection);
   }
 
@@ -331,13 +349,15 @@ function App() {
         priority: Number(issueForm.priority),
         workflow_state_id: issueForm.workflow_state_id || null,
         cycle_id: issueForm.cycle_id || null,
+        project_id: issueForm.project_id || null,
+        milestone_id: issueForm.milestone_id || null,
         assignee_user_id: issueForm.assignee_user_id ? Number(issueForm.assignee_user_id) : null,
         due_date: issueForm.due_date || null,
       };
       const created = await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/issues`, {
         method: 'POST', body: JSON.stringify(payload),
       });
-      setIssueForm({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
+      setIssueForm({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', project_id: '', milestone_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
       setShowIssueForm(false);
       await loadPlanning(workspaceId, teamId);
       openIssue(created);
@@ -368,6 +388,104 @@ function App() {
       setLabelForm({ name: '', color: '#6C6FF2' });
       await loadPlanning(workspaceId, teamId);
       setStatus('Label created');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  function openProject(project) {
+    setSelectedProject(project);
+    setProjectDraft(projectToDraft(project));
+    setSection('Projects');
+  }
+
+  async function createProject(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const payload = {
+        ...projectForm,
+        lead_user_id: projectForm.lead_user_id ? Number(projectForm.lead_user_id) : null,
+        target_date: projectForm.target_date || null,
+      };
+      const created = await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects`, {
+        method: 'POST', body: JSON.stringify(payload),
+      });
+      setProjectForm({ name: '', summary: '', description: '', status: 'planned', lead_user_id: '', target_date: '' });
+      setShowProjectForm(false);
+      await loadPlanning(workspaceId, teamId);
+      openProject(created);
+      setStatus(`Created project ${created.name}`);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function saveProject(event) {
+    event.preventDefault();
+    if (!selectedProject) return;
+    setBusy(true);
+    try {
+      const updated = await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects/${selectedProject.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          ...projectDraft,
+          lead_user_id: projectDraft.lead_user_id ? Number(projectDraft.lead_user_id) : null,
+          target_date: projectDraft.target_date || null,
+        }),
+      });
+      setSelectedProject(updated);
+      setProjectDraft(projectToDraft(updated));
+      setProjects((rows) => rows.map((row) => row.id === updated.id ? updated : row));
+      setStatus('Project brief saved');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function addObjective(event) {
+    event.preventDefault();
+    if (!selectedProject || !objectiveForm.body.trim()) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects/${selectedProject.id}/objectives`, {
+        method: 'POST', body: JSON.stringify(objectiveForm),
+      });
+      setObjectiveForm({ kind: 'objective', body: '' });
+      await loadPlanning(workspaceId, teamId);
+      setStatus(objectiveForm.kind === 'objective' ? 'Objective added' : 'Success criterion added');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function toggleObjective(objective) {
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects/${selectedProject.id}/objectives/${objective.id}`, {
+        method: 'PATCH', body: JSON.stringify({ is_met: !objective.is_met }),
+      });
+      await loadPlanning(workspaceId, teamId);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function addMilestone(event) {
+    event.preventDefault();
+    if (!selectedProject) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects/${selectedProject.id}/milestones`, {
+        method: 'POST', body: JSON.stringify({ ...milestoneForm, target_date: milestoneForm.target_date || null }),
+      });
+      setMilestoneForm({ name: '', description: '', target_date: '' });
+      await loadPlanning(workspaceId, teamId);
+      setStatus('Milestone added');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function addProjectUpdate(event) {
+    event.preventDefault();
+    if (!selectedProject || !projectUpdateForm.body.trim()) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects/${selectedProject.id}/updates`, {
+        method: 'POST', body: JSON.stringify(projectUpdateForm),
+      });
+      setProjectUpdateForm({ body: '', health: 'on_track' });
+      await loadPlanning(workspaceId, teamId);
+      setStatus('Project update posted');
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
@@ -486,6 +604,8 @@ function App() {
               <label>Priority<select value={selectedIssue.priority} onChange={(event) => updateIssue({ priority: Number(event.target.value) })} disabled={busy}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label>
               <label>Assignee<select value={selectedIssue.assignee_user_id || ''} onChange={(event) => updateIssue({ assignee_user_id: event.target.value ? Number(event.target.value) : null })} disabled={busy}><option value="">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label>
               <label>Cycle<select value={selectedIssue.cycle_id || ''} onChange={(event) => updateIssue({ cycle_id: event.target.value || null })} disabled={busy}><option value="">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label>
+              <label>Project<select value={selectedIssue.project_id || ''} onChange={(event) => updateIssue({ project_id: event.target.value || null, milestone_id: null })} disabled={busy}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+              <label>Milestone<select value={selectedIssue.milestone_id || ''} onChange={(event) => updateIssue({ milestone_id: event.target.value || null })} disabled={busy || !selectedIssue.project_id}><option value="">No milestone</option>{projects.find((project) => project.id === selectedIssue.project_id)?.milestones.map((milestone) => <option key={milestone.id} value={milestone.id}>{milestone.name}</option>)}</select></label>
               <label>Due date<input type="date" value={selectedIssue.due_date || ''} onChange={(event) => updateIssue({ due_date: event.target.value || null })} disabled={busy} /></label>
               <fieldset className="label-fieldset"><legend>Labels</legend><div className="label-options">{labels.map((label) => <label className="label-option" key={label.id}><input type="checkbox" checked={selectedLabelIds.includes(label.id)} onChange={() => updateIssue({ label_ids: selectedLabelIds.includes(label.id) ? selectedLabelIds.filter((id) => id !== label.id) : [...selectedLabelIds, label.id] })} disabled={busy} /><span className="label-swatch" style={{ '--label-color': label.color }} />{label.name}</label>)}{!labels.length && <span className="muted">No team labels yet.</span>}</div></fieldset>
               <dl className="issue-metadata"><div><dt>Created by</dt><dd>{memberName(members, selectedIssue.creator_user_id)}</dd></div><div><dt>Updated</dt><dd>{formatDateTime(selectedIssue.updated_at)}</dd></div><div><dt>Issue ID</dt><dd>{selectedIssue.key}</dd></div></dl>
@@ -498,9 +618,51 @@ function App() {
     if (section === 'Issues') return (
       <section className="planning-list-page">
         <div className="toolbar"><div><strong>{issues.length} issues</strong><span>Plan and track team work</span></div><button className="primary" onClick={() => setShowIssueForm(!showIssueForm)}>+ New issue</button></div>
-        {showIssueForm && <form className="editor-card" onSubmit={createIssue}><div className="form-grid"><label className="wide">Title<input autoFocus value={issueForm.title} onChange={(e) => setIssueForm({ ...issueForm, title: e.target.value })} required /></label><label className="wide">Description<textarea value={issueForm.description} onChange={(e) => setIssueForm({ ...issueForm, description: e.target.value })} /></label><label>Status<select value={issueForm.workflow_state_id} onChange={(e) => setIssueForm({ ...issueForm, workflow_state_id: e.target.value })}><option value="">Default</option>{workflowStates.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label><label>Priority<select value={issueForm.priority} onChange={(e) => setIssueForm({ ...issueForm, priority: e.target.value })}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label><label>Cycle<select value={issueForm.cycle_id} onChange={(e) => setIssueForm({ ...issueForm, cycle_id: e.target.value })}><option value="">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label><label>Assignee<select value={issueForm.assignee_user_id} onChange={(e) => setIssueForm({ ...issueForm, assignee_user_id: e.target.value })}><option value="">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label><label>Due date<input type="date" value={issueForm.due_date} onChange={(e) => setIssueForm({ ...issueForm, due_date: e.target.value })} /></label><label className="wide">Labels<select multiple value={issueForm.label_ids} onChange={(e) => setIssueForm({ ...issueForm, label_ids: [...e.target.selectedOptions].map((option) => option.value) })}>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select></label></div><div className="form-actions"><button type="button" className="secondary" onClick={() => setShowIssueForm(false)}>Cancel</button><button className="primary" disabled={busy}>Create issue</button></div></form>}
+        {showIssueForm && <form className="editor-card" onSubmit={createIssue}><div className="form-grid"><label className="wide">Title<input autoFocus value={issueForm.title} onChange={(e) => setIssueForm({ ...issueForm, title: e.target.value })} required /></label><label className="wide">Description<textarea value={issueForm.description} onChange={(e) => setIssueForm({ ...issueForm, description: e.target.value })} /></label><label>Status<select value={issueForm.workflow_state_id} onChange={(e) => setIssueForm({ ...issueForm, workflow_state_id: e.target.value })}><option value="">Default</option>{workflowStates.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label><label>Priority<select value={issueForm.priority} onChange={(e) => setIssueForm({ ...issueForm, priority: e.target.value })}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label><label>Cycle<select value={issueForm.cycle_id} onChange={(e) => setIssueForm({ ...issueForm, cycle_id: e.target.value })}><option value="">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label><label>Project<select value={issueForm.project_id} onChange={(e) => setIssueForm({ ...issueForm, project_id: e.target.value, milestone_id: '' })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label>Milestone<select value={issueForm.milestone_id} onChange={(e) => setIssueForm({ ...issueForm, milestone_id: e.target.value })} disabled={!issueForm.project_id}><option value="">No milestone</option>{projects.find((project) => project.id === issueForm.project_id)?.milestones.map((milestone) => <option key={milestone.id} value={milestone.id}>{milestone.name}</option>)}</select></label><label>Assignee<select value={issueForm.assignee_user_id} onChange={(e) => setIssueForm({ ...issueForm, assignee_user_id: e.target.value })}><option value="">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label><label>Due date<input type="date" value={issueForm.due_date} onChange={(e) => setIssueForm({ ...issueForm, due_date: e.target.value })} /></label><label className="wide">Labels<select multiple value={issueForm.label_ids} onChange={(e) => setIssueForm({ ...issueForm, label_ids: [...e.target.selectedOptions].map((option) => option.value) })}>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select></label></div><div className="form-actions"><button type="button" className="secondary" onClick={() => setShowIssueForm(false)}>Cancel</button><button className="primary" disabled={busy}>Create issue</button></div></form>}
         <div className="issue-board">{workflowStates.map((state) => <div className="state-group" key={state.id}><div className="state-heading"><StateBadge name={state.name} /><span>{issues.filter((issue) => issue.workflow_state_id === state.id).length}</span></div>{issues.filter((issue) => issue.workflow_state_id === state.id).map((issue) => <button key={issue.id} className="issue-row" onClick={() => openIssue(issue)}><span className="priority-dot" data-priority={issue.priority} /><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><span className="row-meta">{issue.labels.map((label) => label.name).join(', ')}</span></button>)}</div>)}</div>
         <div className="settings-grid"><form className="mini-card" onSubmit={createLabel}><h3>Create label</h3><div className="inline-fields"><input placeholder="Label name" value={labelForm.name} onChange={(e) => setLabelForm({ ...labelForm, name: e.target.value })} required /><input className="color-input" type="color" value={labelForm.color} onChange={(e) => setLabelForm({ ...labelForm, color: e.target.value })} /><button className="secondary">Add</button></div></form><div className="mini-card"><h3>Team labels</h3><div className="label-row">{labels.map((label) => <span className="label-pill" key={label.id} style={{ '--label-color': label.color }}>{label.name}</span>)}{!labels.length && <span className="muted">No labels</span>}</div></div></div>
+      </section>
+    );
+
+    if (section === 'Projects' && selectedProject) {
+      const objectives = selectedProject.objectives.filter((item) => item.kind === 'objective');
+      const criteria = selectedProject.objectives.filter((item) => item.kind === 'success_criterion');
+      return (
+        <section className="project-detail-page">
+          <div className="project-detail-topbar"><button className="back-button" onClick={() => setSelectedProject(null)}>← Projects</button><div className="project-progress-copy"><strong>{selectedProject.progress_percent}%</strong><span>{selectedProject.completed_issue_count} of {selectedProject.issue_count} issues complete</span></div></div>
+          <div className="project-progress"><span style={{ width: `${selectedProject.progress_percent}%` }} /></div>
+          <div className="project-detail-grid">
+            <div className="project-detail-main">
+              <form className="project-brief-card" onSubmit={saveProject}>
+                <div className="project-kicker">Project brief</div>
+                <input className="project-title-input" value={projectDraft.name} onChange={(event) => setProjectDraft({ ...projectDraft, name: event.target.value })} required />
+                <input className="project-summary-input" placeholder="One-line summary" value={projectDraft.summary} onChange={(event) => setProjectDraft({ ...projectDraft, summary: event.target.value })} />
+                <textarea className="project-description-input" placeholder="Describe the context, scope, decisions, and links this project needs…" value={projectDraft.description} onChange={(event) => setProjectDraft({ ...projectDraft, description: event.target.value })} />
+                <div className="form-actions"><button className="secondary" disabled={busy}>Save brief</button></div>
+              </form>
+              <section className="project-section-card"><div className="project-section-heading"><div><h2>Objectives & success</h2><p>Make the intended outcome and definition of success explicit.</p></div></div><div className="objective-columns"><ObjectiveList title="Objectives" items={objectives} onToggle={toggleObjective} /><ObjectiveList title="Success criteria" items={criteria} onToggle={toggleObjective} /></div><form className="inline-create-form" onSubmit={addObjective}><select value={objectiveForm.kind} onChange={(event) => setObjectiveForm({ ...objectiveForm, kind: event.target.value })}><option value="objective">Objective</option><option value="success_criterion">Success criterion</option></select><input placeholder="Add an outcome…" value={objectiveForm.body} onChange={(event) => setObjectiveForm({ ...objectiveForm, body: event.target.value })} required /><button className="secondary" disabled={busy}>Add</button></form></section>
+              <section className="project-section-card"><div className="project-section-heading"><div><h2>Linked issues</h2><p>Progress is derived from workflow states—never edited by hand.</p></div><span>{selectedProject.issue_count}</span></div><div className="project-issue-list">{selectedProject.linked_issues.map((issue) => <button className="issue-row" key={issue.id} onClick={() => openIssue(issue)}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.workflow_state_name} /></button>)}{!selectedProject.linked_issues.length && <div className="inline-empty">Link issues from the issue detail properties or when creating an issue.</div>}</div></section>
+              <section className="project-section-card"><div className="project-section-heading"><div><h2>Project updates</h2><p>Share concise health and delivery context with the team.</p></div></div><form className="project-update-form" onSubmit={addProjectUpdate}><textarea placeholder="What changed since the last update?" value={projectUpdateForm.body} onChange={(event) => setProjectUpdateForm({ ...projectUpdateForm, body: event.target.value })} required /><div><select value={projectUpdateForm.health} onChange={(event) => setProjectUpdateForm({ ...projectUpdateForm, health: event.target.value })}><option value="on_track">On track</option><option value="at_risk">At risk</option><option value="off_track">Off track</option></select><button className="primary" disabled={busy}>Post update</button></div></form><div className="project-update-list">{selectedProject.updates.map((update) => <article key={update.id}><div><span className={`health-dot ${update.health || ''}`} /><strong>{healthLabel(update.health)}</strong><time>{formatDateTime(update.created_at)}</time></div><p>{update.body}</p><small>{update.author_name || 'Former member'}</small></article>)}{!selectedProject.updates.length && <div className="inline-empty">No project updates yet.</div>}</div></section>
+            </div>
+            <aside className="project-sidebar">
+              <div className="properties-heading"><h2>Project properties</h2><span>Saved with the project brief</span></div>
+              <label>Status<select value={projectDraft.status} onChange={(event) => setProjectDraft({ ...projectDraft, status: event.target.value })}>{['planned', 'in_progress', 'paused', 'completed', 'canceled'].map((value) => <option key={value} value={value}>{value.replaceAll('_', ' ')}</option>)}</select></label>
+              <label>Lead<select value={projectDraft.lead_user_id} onChange={(event) => setProjectDraft({ ...projectDraft, lead_user_id: event.target.value })}><option value="">No lead</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label>
+              <label>Target date<input type="date" value={projectDraft.target_date} onChange={(event) => setProjectDraft({ ...projectDraft, target_date: event.target.value })} /></label>
+              <div className="project-sidebar-heading"><h3>Milestones</h3><span>{selectedProject.milestones.length}</span></div>
+              <div className="milestone-list">{selectedProject.milestones.map((milestone) => <article key={milestone.id}><div><span className={`milestone-status ${milestone.status}`} /><strong>{milestone.name}</strong></div><p>{milestone.description || 'No description'}</p><small>{milestone.completed_issue_count}/{milestone.issue_count} issues · {milestone.target_date || 'No date'}</small></article>)}</div>
+              <form className="milestone-form" onSubmit={addMilestone}><input placeholder="Milestone name" value={milestoneForm.name} onChange={(event) => setMilestoneForm({ ...milestoneForm, name: event.target.value })} required /><textarea placeholder="Description" value={milestoneForm.description} onChange={(event) => setMilestoneForm({ ...milestoneForm, description: event.target.value })} /><input type="date" value={milestoneForm.target_date} onChange={(event) => setMilestoneForm({ ...milestoneForm, target_date: event.target.value })} /><button className="secondary" disabled={busy}>Add milestone</button></form>
+            </aside>
+          </div>
+        </section>
+      );
+    }
+
+    if (section === 'Projects') return (
+      <section className="project-list-page">
+        <div className="toolbar"><div><strong>{projects.length} projects</strong><span>Outcome-oriented work owned by {selectedTeam.name}</span></div><button className="primary" onClick={() => setShowProjectForm(!showProjectForm)}>+ New project</button></div>
+        {showProjectForm && <form className="editor-card" onSubmit={createProject}><div className="form-grid"><label>Name<input autoFocus value={projectForm.name} onChange={(event) => setProjectForm({ ...projectForm, name: event.target.value })} required /></label><label>Status<select value={projectForm.status} onChange={(event) => setProjectForm({ ...projectForm, status: event.target.value })}><option value="planned">Planned</option><option value="in_progress">In progress</option></select></label><label className="wide">Summary<input value={projectForm.summary} onChange={(event) => setProjectForm({ ...projectForm, summary: event.target.value })} /></label><label className="wide">Description<textarea value={projectForm.description} onChange={(event) => setProjectForm({ ...projectForm, description: event.target.value })} /></label><label>Lead<select value={projectForm.lead_user_id} onChange={(event) => setProjectForm({ ...projectForm, lead_user_id: event.target.value })}><option value="">No lead</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label><label>Target date<input type="date" value={projectForm.target_date} onChange={(event) => setProjectForm({ ...projectForm, target_date: event.target.value })} /></label></div><div className="form-actions"><button type="button" className="secondary" onClick={() => setShowProjectForm(false)}>Cancel</button><button className="primary" disabled={busy}>Create project</button></div></form>}
+        <div className="project-grid">{projects.map((project) => <button className="project-card" key={project.id} onClick={() => openProject(project)}><div className="project-card-top"><span className={`project-status ${project.status}`} /> <span>{project.status.replaceAll('_', ' ')}</span><strong>{project.progress_percent}%</strong></div><h2>{project.name}</h2><p>{project.summary || 'Add a short project summary.'}</p><div className="project-progress"><span style={{ width: `${project.progress_percent}%` }} /></div><div className="project-card-meta"><span>{project.issue_count} issues</span><span>{project.milestones.length} milestones</span><span>{project.target_date || 'No target date'}</span></div></button>)}{!projects.length && <div className="empty-panel project-empty"><div className="section-icon">P</div><h3>No projects yet</h3><p>Create a project to connect a brief, milestones, updates, and issues.</p></div>}</div>
       </section>
     );
 
@@ -537,7 +699,7 @@ function App() {
       </aside>
       <main className="content">
         {!selectedWorkspace ? <EmptyState title="Create your first workspace" body="A workspace contains your teams and shared product work." action={() => setShowWorkspaceForm(true)} /> : !selectedTeam ? <EmptyState title="Create your first team" body="Teams own issue keys, cycles, projects, and views." action={() => setShowTeamForm(true)} /> : <>
-          <header className="page-header"><div><div className="breadcrumbs">{selectedWorkspace.name} / {selectedTeam.name}{selectedIssue && issueRoute ? ` / ${selectedIssue.key}` : ''}</div><h1>{selectedIssue && issueRoute ? 'Issue detail' : section}</h1></div><span className="role-chip">{selectedTeam.my_role}</span></header>
+          <header className="page-header"><div><div className="breadcrumbs">{selectedWorkspace.name} / {selectedTeam.name}{selectedIssue && issueRoute ? ` / ${selectedIssue.key}` : selectedProject ? ` / ${selectedProject.name}` : ''}</div><h1>{selectedIssue && issueRoute ? 'Issue detail' : selectedProject ? 'Project detail' : section}</h1></div><span className="role-chip">{selectedTeam.my_role}</span></header>
           {planningContent()}
         </>}
         {status && <div className="toast"><span className="toast-dot" />{status}</div>}
@@ -555,6 +717,25 @@ function formatDateTime(value) {
 
 function memberName(members, userId) {
   return members.find((member) => member.user_id === userId)?.name || 'Former member';
+}
+
+function projectToDraft(project) {
+  return {
+    name: project.name,
+    summary: project.summary || '',
+    description: project.description || '',
+    status: project.status,
+    lead_user_id: project.lead_user_id || '',
+    target_date: project.target_date || '',
+  };
+}
+
+function healthLabel(value) {
+  return ({ on_track: 'On track', at_risk: 'At risk', off_track: 'Off track' })[value] || 'No health set';
+}
+
+function ObjectiveList({ title, items, onToggle }) {
+  return <div className="objective-list"><h3>{title}</h3>{items.map((item) => <button type="button" key={item.id} className={item.is_met ? 'complete' : ''} onClick={() => onToggle(item)}><span>{item.is_met ? '✓' : ''}</span><strong>{item.body}</strong></button>)}{!items.length && <p>No items yet.</p>}</div>;
 }
 
 function ActivityItem({ item }) {
