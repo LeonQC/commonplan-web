@@ -26,6 +26,18 @@ function parseIssueRoute(pathname = window.location.pathname) {
   return match ? { workspaceId: match[1], key: decodeURIComponent(match[2]).toUpperCase() } : null;
 }
 
+function parseSummaryRoute(pathname = window.location.pathname) {
+  const match = pathname.match(/^\/workspaces\/([^/]+)\/teams\/([^/]+)\/summary\/?$/);
+  return match ? { workspaceId: match[1], teamId: match[2] } : null;
+}
+
+const SUMMARY_FILTER_KEYS = ['cycle', 'project', 'status', 'priority', 'assignee', 'label', 'due', 'ownership', 'date_from', 'date_to', 'include_archived'];
+
+function summaryFiltersFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return Object.fromEntries(SUMMARY_FILTER_KEYS.map((key) => [key, params.get(key) || '']));
+}
+
 async function authRequest(path, options = {}) {
   const response = await fetchWithTimeout(`${AUTH_BASE_URL}${path}`, {
     ...options,
@@ -62,18 +74,31 @@ function App() {
   const [workspaceId, setWorkspaceId] = useState('');
   const [teams, setTeams] = useState([]);
   const [teamId, setTeamId] = useState('');
-  const [section, setSection] = useState('Overview');
+  const [section, setSection] = useState(() => parseSummaryRoute() ? 'Summary' : 'Overview');
   const [workspaceForm, setWorkspaceForm] = useState({ name: '', slug: '', description: '' });
   const [teamForm, setTeamForm] = useState({ name: '', issue_prefix: '', description: '' });
   const [showWorkspaceForm, setShowWorkspaceForm] = useState(false);
   const [showTeamForm, setShowTeamForm] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [overview, setOverview] = useState(null);
+  const [summaryRoute, setSummaryRoute] = useState(() => parseSummaryRoute());
+  const [summaryData, setSummaryData] = useState(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryFilters, setSummaryFilters] = useState(() => summaryFiltersFromUrl());
+  const [summaryFiltersOpen, setSummaryFiltersOpen] = useState(false);
   const [workflowStates, setWorkflowStates] = useState([]);
   const [cycles, setCycles] = useState([]);
   const [labels, setLabels] = useState([]);
   const [issues, setIssues] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [members, setMembers] = useState([]);
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [showProjectForm, setShowProjectForm] = useState(false);
+  const [projectForm, setProjectForm] = useState({ name: '', summary: '', description: '', status: 'planned', lead_user_id: '', target_date: '' });
+  const [projectDraft, setProjectDraft] = useState({ name: '', summary: '', description: '', status: 'planned', lead_user_id: '', target_date: '' });
+  const [objectiveForm, setObjectiveForm] = useState({ kind: 'objective', body: '' });
+  const [milestoneForm, setMilestoneForm] = useState({ name: '', description: '', target_date: '' });
+  const [projectUpdateForm, setProjectUpdateForm] = useState({ body: '', health: 'on_track' });
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [issueRoute, setIssueRoute] = useState(() => parseIssueRoute());
   const [issueActivity, setIssueActivity] = useState([]);
@@ -81,7 +106,7 @@ function App() {
   const [commentBody, setCommentBody] = useState('');
   const [issueLoading, setIssueLoading] = useState(false);
   const [showIssueForm, setShowIssueForm] = useState(false);
-  const [issueForm, setIssueForm] = useState({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
+  const [issueForm, setIssueForm] = useState({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', project_id: '', milestone_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
   const [cycleForm, setCycleForm] = useState({ name: '', starts_on: '', ends_on: '' });
   const [labelForm, setLabelForm] = useState({ name: '', color: '#6C6FF2' });
   const [status, setStatus] = useState('');
@@ -136,13 +161,14 @@ function App() {
   async function loadPlanning(selectedWorkspaceId, selectedTeamId) {
     if (!selectedWorkspaceId || !selectedTeamId) return;
     const base = `/api/v1/workspaces/${selectedWorkspaceId}/teams/${selectedTeamId}`;
-    const [nextOverview, nextStates, nextCycles, nextLabels, nextIssues, nextMembers] = await Promise.all([
+    const [nextOverview, nextStates, nextCycles, nextLabels, nextIssues, nextMembers, nextProjects] = await Promise.all([
       request(`${base}/overview`),
       request(`${base}/workflow-states`),
       request(`${base}/cycles`),
       request(`${base}/labels`),
       request(`${base}/issues`),
       request(`${base}/members`),
+      request(`${base}/projects`),
     ]);
     setOverview(nextOverview);
     setWorkflowStates(nextStates);
@@ -150,6 +176,39 @@ function App() {
     setLabels(nextLabels);
     setIssues(nextIssues);
     setMembers(nextMembers);
+    setProjects(nextProjects);
+    if (selectedProject) {
+      const refreshed = nextProjects.find((project) => project.id === selectedProject.id);
+      if (refreshed) {
+        setSelectedProject(refreshed);
+        setProjectDraft(projectToDraft(refreshed));
+      }
+    }
+  }
+
+  async function loadSummary(selectedWorkspaceId, selectedTeamId, filters = summaryFilters) {
+    if (!selectedWorkspaceId || !selectedTeamId) return;
+    setSummaryLoading(true);
+    try {
+      const params = new URLSearchParams();
+      Object.entries(filters).forEach(([key, value]) => { if (value !== '') params.set(key, value); });
+      params.set('timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+      const suffix = params.toString() ? `?${params}` : '';
+      setSummaryData(await request(`/api/v1/workspaces/${selectedWorkspaceId}/teams/${selectedTeamId}/summary${suffix}`));
+    } finally { setSummaryLoading(false); }
+  }
+
+  function applySummaryFilters(changes) {
+    const next = { ...summaryFilters, ...changes };
+    setSummaryFilters(next);
+    const params = summarySearchParams(next);
+    window.history.pushState({}, '', `/workspaces/${workspaceId}/teams/${teamId}/summary${params}`);
+    setSummaryRoute({ workspaceId, teamId });
+  }
+
+  function resetSummaryFilters() {
+    const next = Object.fromEntries(SUMMARY_FILTER_KEYS.map((key) => [key, '']));
+    applySummaryFilters(next);
   }
 
   async function loadIssueDetail(selectedWorkspaceId, key) {
@@ -174,6 +233,7 @@ function App() {
     const route = { workspaceId: issue.workspace_id || workspaceId, key: issue.key };
     window.history.pushState({}, '', `/workspaces/${route.workspaceId}/issues/${encodeURIComponent(route.key)}`);
     setIssueRoute(route);
+    setSummaryRoute(null);
     setSelectedIssue(issue);
     setIssueDraft({ title: issue.title, description: issue.description || '' });
     setSection('Issues');
@@ -188,6 +248,16 @@ function App() {
 
   function showSection(nextSection) {
     if (issueRoute) closeIssue();
+    if (nextSection !== 'Projects') setSelectedProject(null);
+    if (nextSection === 'Summary') {
+      const route = { workspaceId, teamId };
+      const params = summarySearchParams(summaryFilters);
+      window.history.pushState({}, '', `/workspaces/${workspaceId}/teams/${teamId}/summary${params}`);
+      setSummaryRoute(route);
+    } else if (summaryRoute) {
+      window.history.pushState({}, '', '/');
+      setSummaryRoute(null);
+    }
     setSection(nextSection);
   }
 
@@ -210,7 +280,7 @@ function App() {
       setGoogleConfigured(Boolean(google.configured));
       setSessionLoading(false);
       if (profile) {
-        loadWorkspaces(parseIssueRoute()?.workspaceId).catch((error) => setStatus(error.message));
+        loadWorkspaces(parseIssueRoute()?.workspaceId || parseSummaryRoute()?.workspaceId).catch((error) => setStatus(error.message));
       }
     }
     bootstrap().catch((error) => {
@@ -221,7 +291,8 @@ function App() {
 
   useEffect(() => {
     if (currentUser && workspaceId) {
-      loadTeams(workspaceId).catch((error) => setStatus(error.message));
+      const preferredTeam = summaryRoute?.workspaceId === workspaceId ? summaryRoute.teamId : undefined;
+      loadTeams(workspaceId, preferredTeam).catch((error) => setStatus(error.message));
     }
   }, [workspaceId, currentUser]);
 
@@ -230,6 +301,12 @@ function App() {
       loadPlanning(workspaceId, teamId).catch((error) => setStatus(error.message));
     }
   }, [teamId, workspaceId, currentUser]);
+
+  useEffect(() => {
+    if (currentUser && workspaceId && teamId && section === 'Summary') {
+      loadSummary(workspaceId, teamId).catch((error) => setStatus(error.message));
+    }
+  }, [currentUser, workspaceId, teamId, section, summaryFilters]);
 
   useEffect(() => {
     if (!currentUser || !issueRoute) return;
@@ -246,11 +323,20 @@ function App() {
   useEffect(() => {
     const handlePopState = () => {
       const route = parseIssueRoute();
+      const nextSummaryRoute = parseSummaryRoute();
       setIssueRoute(route);
+      setSummaryRoute(nextSummaryRoute);
+      if (nextSummaryRoute) {
+        setSection('Summary');
+        setSummaryFilters(summaryFiltersFromUrl());
+        setWorkspaceId(nextSummaryRoute.workspaceId);
+        setTeamId(nextSummaryRoute.teamId);
+      }
       if (!route) {
         setSelectedIssue(null);
         setIssueActivity([]);
       }
+      if (!route && !nextSummaryRoute) setSection('Overview');
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -331,13 +417,15 @@ function App() {
         priority: Number(issueForm.priority),
         workflow_state_id: issueForm.workflow_state_id || null,
         cycle_id: issueForm.cycle_id || null,
+        project_id: issueForm.project_id || null,
+        milestone_id: issueForm.milestone_id || null,
         assignee_user_id: issueForm.assignee_user_id ? Number(issueForm.assignee_user_id) : null,
         due_date: issueForm.due_date || null,
       };
       const created = await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/issues`, {
         method: 'POST', body: JSON.stringify(payload),
       });
-      setIssueForm({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
+      setIssueForm({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', project_id: '', milestone_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
       setShowIssueForm(false);
       await loadPlanning(workspaceId, teamId);
       openIssue(created);
@@ -368,6 +456,104 @@ function App() {
       setLabelForm({ name: '', color: '#6C6FF2' });
       await loadPlanning(workspaceId, teamId);
       setStatus('Label created');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  function openProject(project) {
+    setSelectedProject(project);
+    setProjectDraft(projectToDraft(project));
+    setSection('Projects');
+  }
+
+  async function createProject(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const payload = {
+        ...projectForm,
+        lead_user_id: projectForm.lead_user_id ? Number(projectForm.lead_user_id) : null,
+        target_date: projectForm.target_date || null,
+      };
+      const created = await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects`, {
+        method: 'POST', body: JSON.stringify(payload),
+      });
+      setProjectForm({ name: '', summary: '', description: '', status: 'planned', lead_user_id: '', target_date: '' });
+      setShowProjectForm(false);
+      await loadPlanning(workspaceId, teamId);
+      openProject(created);
+      setStatus(`Created project ${created.name}`);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function saveProject(event) {
+    event.preventDefault();
+    if (!selectedProject) return;
+    setBusy(true);
+    try {
+      const updated = await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects/${selectedProject.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          ...projectDraft,
+          lead_user_id: projectDraft.lead_user_id ? Number(projectDraft.lead_user_id) : null,
+          target_date: projectDraft.target_date || null,
+        }),
+      });
+      setSelectedProject(updated);
+      setProjectDraft(projectToDraft(updated));
+      setProjects((rows) => rows.map((row) => row.id === updated.id ? updated : row));
+      setStatus('Project brief saved');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function addObjective(event) {
+    event.preventDefault();
+    if (!selectedProject || !objectiveForm.body.trim()) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects/${selectedProject.id}/objectives`, {
+        method: 'POST', body: JSON.stringify(objectiveForm),
+      });
+      setObjectiveForm({ kind: 'objective', body: '' });
+      await loadPlanning(workspaceId, teamId);
+      setStatus(objectiveForm.kind === 'objective' ? 'Objective added' : 'Success criterion added');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function toggleObjective(objective) {
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects/${selectedProject.id}/objectives/${objective.id}`, {
+        method: 'PATCH', body: JSON.stringify({ is_met: !objective.is_met }),
+      });
+      await loadPlanning(workspaceId, teamId);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function addMilestone(event) {
+    event.preventDefault();
+    if (!selectedProject) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects/${selectedProject.id}/milestones`, {
+        method: 'POST', body: JSON.stringify({ ...milestoneForm, target_date: milestoneForm.target_date || null }),
+      });
+      setMilestoneForm({ name: '', description: '', target_date: '' });
+      await loadPlanning(workspaceId, teamId);
+      setStatus('Milestone added');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function addProjectUpdate(event) {
+    event.preventDefault();
+    if (!selectedProject || !projectUpdateForm.body.trim()) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects/${selectedProject.id}/updates`, {
+        method: 'POST', body: JSON.stringify(projectUpdateForm),
+      });
+      setProjectUpdateForm({ body: '', health: 'on_track' });
+      await loadPlanning(workspaceId, teamId);
+      setStatus('Project update posted');
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
@@ -431,6 +617,7 @@ function App() {
   const selectedTeam = teams.find((item) => item.id === teamId);
   const navItems = [
     { name: 'Overview', icon: 'overview' },
+    { name: 'Summary', icon: 'summary' },
     { name: 'Issues', icon: 'issues' },
     { name: 'Cycles', icon: 'cycles' },
     { name: 'Projects', icon: 'projects' },
@@ -446,6 +633,69 @@ function App() {
         <div className="activity-panel"><div className="panel-title"><div><h3>Recent issues</h3><p>The latest work across this team.</p></div><button className="primary" onClick={() => { showSection('Issues'); setShowIssueForm(true); }}>New issue</button></div>{overview?.recent_issues?.length ? <div className="issue-list">{overview.recent_issues.map((issue) => <button key={issue.key} className="issue-row" onClick={() => openIssue(issues.find((item) => item.key === issue.key) || { ...issue, workspace_id: workspaceId })}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.workflow_state} /></button>)}</div> : <div className="inline-empty">No issues yet. Create the first item for this team.</div>}</div>
       </section>
     );
+
+    if (section === 'Summary') {
+      if (summaryLoading && !summaryData) return <section className="issue-detail-loading"><div className="spinner" />Loading team summary…</section>;
+      const data = summaryData;
+      const maxTrend = Math.max(1, ...(data?.trend?.buckets || []).flatMap((bucket) => [bucket.created, bucket.completed]));
+      const activeSummaryFilters = SUMMARY_FILTER_KEYS.filter((key) => summaryFilters[key]);
+      const summaryFilterName = { status: 'Status', priority: 'Priority', project: 'Project', cycle: 'Cycle', assignee: 'Assignee', label: 'Label', due: 'Due', ownership: 'Ownership', date_from: 'From', date_to: 'Through', include_archived: 'Archive' };
+      const summaryFilterValue = (key, value) => {
+        if (key === 'priority') return ['No priority', 'Low', 'Medium', 'High', 'Urgent'][Number(value)] || value;
+        if (key === 'project') return value === 'none' ? 'No project' : projects.find((item) => item.id === value)?.name || value;
+        if (key === 'cycle') return value === 'none' ? 'No cycle' : cycles.find((item) => item.id === value)?.name || value;
+        if (key === 'assignee') return value === 'unassigned' ? 'Unassigned' : members.find((item) => String(item.user_id) === value)?.name || value;
+        if (key === 'label') return labels.find((item) => item.id === value)?.name || value;
+        if (key === 'include_archived') return 'Included';
+        return value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+      };
+      return (
+        <section className="summary-page">
+          <div className="summary-filter-shell">
+            <div className="summary-toolbar">
+              <div><strong>Team Summary</strong><span>Health, workload, and momentum for {selectedTeam.name}.</span></div>
+              <button className={`summary-filter-trigger ${summaryFiltersOpen ? 'active' : ''}`} aria-expanded={summaryFiltersOpen} onClick={() => setSummaryFiltersOpen((open) => !open)}><span className="filter-glyph">≡</span> Filter{activeSummaryFilters.length > 0 && <b>{activeSummaryFilters.length}</b>}<span className="filter-chevron">⌄</span></button>
+            </div>
+            {activeSummaryFilters.length > 0 && <div className="summary-filter-chips"><span>Filtered by</span>{activeSummaryFilters.map((key) => <button key={key} onClick={() => applySummaryFilters({ [key]: '' })}><small>{summaryFilterName[key]}</small>{summaryFilterValue(key, summaryFilters[key])}<b>×</b></button>)}<button className="clear-filter-chips" onClick={resetSummaryFilters}>Clear all</button></div>}
+            {summaryFiltersOpen && <div className="summary-filter-popover">
+              <div className="summary-filter-heading"><div><strong>Filter summary</strong><span>Results update as you choose.</span></div><button aria-label="Close filters" onClick={() => setSummaryFiltersOpen(false)}>×</button></div>
+              <div className="summary-filters">
+                <label>Status<select value={summaryFilters.status} onChange={(event) => applySummaryFilters({ status: event.target.value })}><option value="">All statuses</option><option value="backlog">Backlog</option><option value="todo">Todo</option><option value="in_progress">In progress</option><option value="done">Done</option><option value="canceled">Canceled</option></select></label>
+                <label>Priority<select value={summaryFilters.priority} onChange={(event) => applySummaryFilters({ priority: event.target.value })}><option value="">All priorities</option>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label>
+                <label>Project<select value={summaryFilters.project} onChange={(event) => applySummaryFilters({ project: event.target.value })}><option value="">All projects</option><option value="none">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+                <label>Cycle<select value={summaryFilters.cycle} onChange={(event) => applySummaryFilters({ cycle: event.target.value })}><option value="">All cycles</option><option value="none">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label>
+                <label>Assignee<select value={summaryFilters.assignee} onChange={(event) => applySummaryFilters({ assignee: event.target.value })}><option value="">All assignees</option><option value="unassigned">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label>
+                <label>Label<select value={summaryFilters.label} onChange={(event) => applySummaryFilters({ label: event.target.value })}><option value="">All labels</option>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select></label>
+                <label>Due<select value={summaryFilters.due} onChange={(event) => applySummaryFilters({ due: event.target.value })}><option value="">Any due date</option><option value="overdue">Overdue</option><option value="due_soon">Due soon</option><option value="not_due">Not due</option><option value="no_due_date">No due date</option></select></label>
+                <label>Ownership<select value={summaryFilters.ownership} onChange={(event) => applySummaryFilters({ ownership: event.target.value })}><option value="">All team issues</option><option value="mine">My issues</option><option value="unassigned">Unassigned</option></select></label>
+                <label>Created from<input type="date" value={summaryFilters.date_from} onChange={(event) => applySummaryFilters({ date_from: event.target.value })} /></label>
+                <label>Created through<input type="date" value={summaryFilters.date_to} onChange={(event) => applySummaryFilters({ date_to: event.target.value })} /></label>
+                <label>Archive<select value={summaryFilters.include_archived} onChange={(event) => applySummaryFilters({ include_archived: event.target.value })}><option value="">Active issues only</option><option value="true">Include archived</option></select></label>
+              </div>
+              <div className="summary-filter-footer"><button className="tertiary" onClick={resetSummaryFilters} disabled={!activeSummaryFilters.length}>Clear all</button><button className="primary" onClick={() => setSummaryFiltersOpen(false)}>Done</button></div>
+            </div>}
+          </div>
+          {!data ? <div className="empty-panel">Summary is unavailable.</div> : <>
+            <div className="summary-metrics">{Object.entries({ total: 'Matching', open: 'Open', in_progress: 'In progress', completed: 'Completed', overdue: 'Overdue', unassigned: 'Unassigned' }).map(([key, label]) => <Metric key={key} label={label} value={data.headline_metrics[key]} />)}</div>
+            <div className="summary-grid">
+              <SummaryDistribution title="Status distribution" rows={data.status_distribution} labelKey="label" onSelect={(row) => applySummaryFilters({ status: row.category })} />
+              <SummaryDistribution title="Priority distribution" rows={data.priority_distribution} labelKey="label" onSelect={(row) => applySummaryFilters({ priority: String(row.priority) })} />
+              <SummaryDistribution title="Assignee workload" rows={data.assignee_distribution} labelKey="name" onSelect={(row) => applySummaryFilters({ assignee: row.user_id == null ? 'unassigned' : String(row.user_id) })} />
+              <SummaryDistribution title="Project distribution" rows={data.project_distribution} labelKey="name" valueKey="percent" suffix="%" onSelect={(row) => applySummaryFilters({ project: row.project_id || 'none' })} />
+            </div>
+            <div className="summary-progress-grid">
+              <section className="summary-card cycle-summary"><div className="summary-card-heading"><div><h2>Cycle progress</h2><p>Done versus non-canceled issues</p></div></div>{data.cycle_progress ? <><div className="cycle-summary-value"><strong>{data.cycle_progress.percent}%</strong><span>{data.cycle_progress.completed}/{data.cycle_progress.total} · {data.cycle_progress.name}</span></div><div className="project-progress"><span style={{ width: `${data.cycle_progress.percent}%` }} /></div></> : <div className="summary-empty">No current or selected cycle.</div>}</section>
+              <section className="summary-card trend-card"><div className="summary-card-heading"><div><h2>Created / completed trend</h2><p>{data.trend.from} — {data.trend.to}</p></div><div className="trend-legend"><span className="created" />Created <span className="completed" />Completed</div></div><div className="trend-chart">{data.trend.buckets.map((bucket) => <div className="trend-bucket" key={bucket.date} title={`${bucket.date}: ${bucket.created} created, ${bucket.completed} completed`}><div><span className="created" style={{ height: `${Math.max(3, bucket.created / maxTrend * 100)}%` }} /><span className="completed" style={{ height: `${Math.max(3, bucket.completed / maxTrend * 100)}%` }} /></div><small>{bucket.date.slice(5)}</small></div>)}</div></section>
+            </div>
+            <section className="summary-card"><div className="summary-card-heading"><div><h2>Attention</h2><p>Bounded queues for work that may need action.</p></div></div><div className="attention-grid">{Object.entries(data.attention_issues).map(([kind, rows]) => <div className="attention-column" key={kind}><h3>{kind.replaceAll('_', ' ')}</h3>{rows.map((issue) => <button key={issue.id} onClick={() => openIssue(issue)}><span>{issue.key}</span><strong>{issue.title}</strong></button>)}{!rows.length && <p>Nothing here.</p>}</div>)}</div></section>
+            <div className="summary-bottom-grid">
+              <section className="summary-card"><div className="summary-card-heading"><div><h2>Matching issues</h2><p>Click chart segments to drill into this result.</p></div><span>{data.matching_issues.length}</span></div><div className="summary-issue-list">{data.matching_issues.map((issue) => <button className="issue-row" key={issue.id} onClick={() => openIssue(issue)}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.status} /></button>)}{!data.matching_issues.length && <div className="summary-empty">No issues match these filters.</div>}</div></section>
+              <section className="summary-card"><div className="summary-card-heading"><div><h2>Recent activity</h2><p>Latest activity inside the filtered issue set.</p></div></div><div className="summary-activity">{data.recent_activity.map((item) => <button key={`${item.kind}-${item.id}`} onClick={() => openIssue({ key: item.issue_key, workspace_id: workspaceId })}><span>{item.issue_key}</span><strong>{item.actor_name || 'System'}</strong><p>{item.event_type.replaceAll('.', ' ')}</p><time>{formatDateTime(item.created_at)}</time></button>)}{!data.recent_activity.length && <div className="summary-empty">No recent activity.</div>}</div></section>
+            </div>
+          </>}
+        </section>
+      );
+    }
 
     if (section === 'Issues' && issueRoute) {
       if (issueLoading && !selectedIssue) return <section className="issue-detail-loading"><div className="spinner" />Loading issue…</section>;
@@ -486,6 +736,8 @@ function App() {
               <label>Priority<select value={selectedIssue.priority} onChange={(event) => updateIssue({ priority: Number(event.target.value) })} disabled={busy}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label>
               <label>Assignee<select value={selectedIssue.assignee_user_id || ''} onChange={(event) => updateIssue({ assignee_user_id: event.target.value ? Number(event.target.value) : null })} disabled={busy}><option value="">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label>
               <label>Cycle<select value={selectedIssue.cycle_id || ''} onChange={(event) => updateIssue({ cycle_id: event.target.value || null })} disabled={busy}><option value="">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label>
+              <label>Project<select value={selectedIssue.project_id || ''} onChange={(event) => updateIssue({ project_id: event.target.value || null, milestone_id: null })} disabled={busy}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+              <label>Milestone<select value={selectedIssue.milestone_id || ''} onChange={(event) => updateIssue({ milestone_id: event.target.value || null })} disabled={busy || !selectedIssue.project_id}><option value="">No milestone</option>{projects.find((project) => project.id === selectedIssue.project_id)?.milestones.map((milestone) => <option key={milestone.id} value={milestone.id}>{milestone.name}</option>)}</select></label>
               <label>Due date<input type="date" value={selectedIssue.due_date || ''} onChange={(event) => updateIssue({ due_date: event.target.value || null })} disabled={busy} /></label>
               <fieldset className="label-fieldset"><legend>Labels</legend><div className="label-options">{labels.map((label) => <label className="label-option" key={label.id}><input type="checkbox" checked={selectedLabelIds.includes(label.id)} onChange={() => updateIssue({ label_ids: selectedLabelIds.includes(label.id) ? selectedLabelIds.filter((id) => id !== label.id) : [...selectedLabelIds, label.id] })} disabled={busy} /><span className="label-swatch" style={{ '--label-color': label.color }} />{label.name}</label>)}{!labels.length && <span className="muted">No team labels yet.</span>}</div></fieldset>
               <dl className="issue-metadata"><div><dt>Created by</dt><dd>{memberName(members, selectedIssue.creator_user_id)}</dd></div><div><dt>Updated</dt><dd>{formatDateTime(selectedIssue.updated_at)}</dd></div><div><dt>Issue ID</dt><dd>{selectedIssue.key}</dd></div></dl>
@@ -498,9 +750,51 @@ function App() {
     if (section === 'Issues') return (
       <section className="planning-list-page">
         <div className="toolbar"><div><strong>{issues.length} issues</strong><span>Plan and track team work</span></div><button className="primary" onClick={() => setShowIssueForm(!showIssueForm)}>+ New issue</button></div>
-        {showIssueForm && <form className="editor-card" onSubmit={createIssue}><div className="form-grid"><label className="wide">Title<input autoFocus value={issueForm.title} onChange={(e) => setIssueForm({ ...issueForm, title: e.target.value })} required /></label><label className="wide">Description<textarea value={issueForm.description} onChange={(e) => setIssueForm({ ...issueForm, description: e.target.value })} /></label><label>Status<select value={issueForm.workflow_state_id} onChange={(e) => setIssueForm({ ...issueForm, workflow_state_id: e.target.value })}><option value="">Default</option>{workflowStates.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label><label>Priority<select value={issueForm.priority} onChange={(e) => setIssueForm({ ...issueForm, priority: e.target.value })}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label><label>Cycle<select value={issueForm.cycle_id} onChange={(e) => setIssueForm({ ...issueForm, cycle_id: e.target.value })}><option value="">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label><label>Assignee<select value={issueForm.assignee_user_id} onChange={(e) => setIssueForm({ ...issueForm, assignee_user_id: e.target.value })}><option value="">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label><label>Due date<input type="date" value={issueForm.due_date} onChange={(e) => setIssueForm({ ...issueForm, due_date: e.target.value })} /></label><label className="wide">Labels<select multiple value={issueForm.label_ids} onChange={(e) => setIssueForm({ ...issueForm, label_ids: [...e.target.selectedOptions].map((option) => option.value) })}>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select></label></div><div className="form-actions"><button type="button" className="secondary" onClick={() => setShowIssueForm(false)}>Cancel</button><button className="primary" disabled={busy}>Create issue</button></div></form>}
+        {showIssueForm && <form className="editor-card" onSubmit={createIssue}><div className="form-grid"><label className="wide">Title<input autoFocus value={issueForm.title} onChange={(e) => setIssueForm({ ...issueForm, title: e.target.value })} required /></label><label className="wide">Description<textarea value={issueForm.description} onChange={(e) => setIssueForm({ ...issueForm, description: e.target.value })} /></label><label>Status<select value={issueForm.workflow_state_id} onChange={(e) => setIssueForm({ ...issueForm, workflow_state_id: e.target.value })}><option value="">Default</option>{workflowStates.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label><label>Priority<select value={issueForm.priority} onChange={(e) => setIssueForm({ ...issueForm, priority: e.target.value })}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label><label>Cycle<select value={issueForm.cycle_id} onChange={(e) => setIssueForm({ ...issueForm, cycle_id: e.target.value })}><option value="">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label><label>Project<select value={issueForm.project_id} onChange={(e) => setIssueForm({ ...issueForm, project_id: e.target.value, milestone_id: '' })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label>Milestone<select value={issueForm.milestone_id} onChange={(e) => setIssueForm({ ...issueForm, milestone_id: e.target.value })} disabled={!issueForm.project_id}><option value="">No milestone</option>{projects.find((project) => project.id === issueForm.project_id)?.milestones.map((milestone) => <option key={milestone.id} value={milestone.id}>{milestone.name}</option>)}</select></label><label>Assignee<select value={issueForm.assignee_user_id} onChange={(e) => setIssueForm({ ...issueForm, assignee_user_id: e.target.value })}><option value="">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label><label>Due date<input type="date" value={issueForm.due_date} onChange={(e) => setIssueForm({ ...issueForm, due_date: e.target.value })} /></label><label className="wide">Labels<select multiple value={issueForm.label_ids} onChange={(e) => setIssueForm({ ...issueForm, label_ids: [...e.target.selectedOptions].map((option) => option.value) })}>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select></label></div><div className="form-actions"><button type="button" className="secondary" onClick={() => setShowIssueForm(false)}>Cancel</button><button className="primary" disabled={busy}>Create issue</button></div></form>}
         <div className="issue-board">{workflowStates.map((state) => <div className="state-group" key={state.id}><div className="state-heading"><StateBadge name={state.name} /><span>{issues.filter((issue) => issue.workflow_state_id === state.id).length}</span></div>{issues.filter((issue) => issue.workflow_state_id === state.id).map((issue) => <button key={issue.id} className="issue-row" onClick={() => openIssue(issue)}><span className="priority-dot" data-priority={issue.priority} /><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><span className="row-meta">{issue.labels.map((label) => label.name).join(', ')}</span></button>)}</div>)}</div>
         <div className="settings-grid"><form className="mini-card" onSubmit={createLabel}><h3>Create label</h3><div className="inline-fields"><input placeholder="Label name" value={labelForm.name} onChange={(e) => setLabelForm({ ...labelForm, name: e.target.value })} required /><input className="color-input" type="color" value={labelForm.color} onChange={(e) => setLabelForm({ ...labelForm, color: e.target.value })} /><button className="secondary">Add</button></div></form><div className="mini-card"><h3>Team labels</h3><div className="label-row">{labels.map((label) => <span className="label-pill" key={label.id} style={{ '--label-color': label.color }}>{label.name}</span>)}{!labels.length && <span className="muted">No labels</span>}</div></div></div>
+      </section>
+    );
+
+    if (section === 'Projects' && selectedProject) {
+      const objectives = selectedProject.objectives.filter((item) => item.kind === 'objective');
+      const criteria = selectedProject.objectives.filter((item) => item.kind === 'success_criterion');
+      return (
+        <section className="project-detail-page">
+          <div className="project-detail-topbar"><button className="back-button" onClick={() => setSelectedProject(null)}>← Projects</button><div className="project-progress-copy"><strong>{selectedProject.progress_percent}%</strong><span>{selectedProject.completed_issue_count} of {selectedProject.issue_count} issues complete</span></div></div>
+          <div className="project-progress"><span style={{ width: `${selectedProject.progress_percent}%` }} /></div>
+          <div className="project-detail-grid">
+            <div className="project-detail-main">
+              <form className="project-brief-card" onSubmit={saveProject}>
+                <div className="project-kicker">Project brief</div>
+                <input className="project-title-input" value={projectDraft.name} onChange={(event) => setProjectDraft({ ...projectDraft, name: event.target.value })} required />
+                <input className="project-summary-input" placeholder="One-line summary" value={projectDraft.summary} onChange={(event) => setProjectDraft({ ...projectDraft, summary: event.target.value })} />
+                <textarea className="project-description-input" placeholder="Describe the context, scope, decisions, and links this project needs…" value={projectDraft.description} onChange={(event) => setProjectDraft({ ...projectDraft, description: event.target.value })} />
+                <div className="form-actions"><button className="secondary" disabled={busy}>Save brief</button></div>
+              </form>
+              <section className="project-section-card"><div className="project-section-heading"><div><h2>Objectives & success</h2><p>Make the intended outcome and definition of success explicit.</p></div></div><div className="objective-columns"><ObjectiveList title="Objectives" items={objectives} onToggle={toggleObjective} /><ObjectiveList title="Success criteria" items={criteria} onToggle={toggleObjective} /></div><form className="inline-create-form" onSubmit={addObjective}><select value={objectiveForm.kind} onChange={(event) => setObjectiveForm({ ...objectiveForm, kind: event.target.value })}><option value="objective">Objective</option><option value="success_criterion">Success criterion</option></select><input placeholder="Add an outcome…" value={objectiveForm.body} onChange={(event) => setObjectiveForm({ ...objectiveForm, body: event.target.value })} required /><button className="secondary" disabled={busy}>Add</button></form></section>
+              <section className="project-section-card"><div className="project-section-heading"><div><h2>Linked issues</h2><p>Progress is derived from workflow states—never edited by hand.</p></div><span>{selectedProject.issue_count}</span></div><div className="project-issue-list">{selectedProject.linked_issues.map((issue) => <button className="issue-row" key={issue.id} onClick={() => openIssue(issue)}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.workflow_state_name} /></button>)}{!selectedProject.linked_issues.length && <div className="inline-empty">Link issues from the issue detail properties or when creating an issue.</div>}</div></section>
+              <section className="project-section-card"><div className="project-section-heading"><div><h2>Project updates</h2><p>Share concise health and delivery context with the team.</p></div></div><form className="project-update-form" onSubmit={addProjectUpdate}><textarea placeholder="What changed since the last update?" value={projectUpdateForm.body} onChange={(event) => setProjectUpdateForm({ ...projectUpdateForm, body: event.target.value })} required /><div><select value={projectUpdateForm.health} onChange={(event) => setProjectUpdateForm({ ...projectUpdateForm, health: event.target.value })}><option value="on_track">On track</option><option value="at_risk">At risk</option><option value="off_track">Off track</option></select><button className="primary" disabled={busy}>Post update</button></div></form><div className="project-update-list">{selectedProject.updates.map((update) => <article key={update.id}><div><span className={`health-dot ${update.health || ''}`} /><strong>{healthLabel(update.health)}</strong><time>{formatDateTime(update.created_at)}</time></div><p>{update.body}</p><small>{update.author_name || 'Former member'}</small></article>)}{!selectedProject.updates.length && <div className="inline-empty">No project updates yet.</div>}</div></section>
+            </div>
+            <aside className="project-sidebar">
+              <div className="properties-heading"><h2>Project properties</h2><span>Saved with the project brief</span></div>
+              <label>Status<select value={projectDraft.status} onChange={(event) => setProjectDraft({ ...projectDraft, status: event.target.value })}>{['planned', 'in_progress', 'paused', 'completed', 'canceled'].map((value) => <option key={value} value={value}>{value.replaceAll('_', ' ')}</option>)}</select></label>
+              <label>Lead<select value={projectDraft.lead_user_id} onChange={(event) => setProjectDraft({ ...projectDraft, lead_user_id: event.target.value })}><option value="">No lead</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label>
+              <label>Target date<input type="date" value={projectDraft.target_date} onChange={(event) => setProjectDraft({ ...projectDraft, target_date: event.target.value })} /></label>
+              <div className="project-sidebar-heading"><h3>Milestones</h3><span>{selectedProject.milestones.length}</span></div>
+              <div className="milestone-list">{selectedProject.milestones.map((milestone) => <article key={milestone.id}><div><span className={`milestone-status ${milestone.status}`} /><strong>{milestone.name}</strong></div><p>{milestone.description || 'No description'}</p><small>{milestone.completed_issue_count}/{milestone.issue_count} issues · {milestone.target_date || 'No date'}</small></article>)}</div>
+              <form className="milestone-form" onSubmit={addMilestone}><input placeholder="Milestone name" value={milestoneForm.name} onChange={(event) => setMilestoneForm({ ...milestoneForm, name: event.target.value })} required /><textarea placeholder="Description" value={milestoneForm.description} onChange={(event) => setMilestoneForm({ ...milestoneForm, description: event.target.value })} /><input type="date" value={milestoneForm.target_date} onChange={(event) => setMilestoneForm({ ...milestoneForm, target_date: event.target.value })} /><button className="secondary" disabled={busy}>Add milestone</button></form>
+            </aside>
+          </div>
+        </section>
+      );
+    }
+
+    if (section === 'Projects') return (
+      <section className="project-list-page">
+        <div className="toolbar"><div><strong>{projects.length} projects</strong><span>Outcome-oriented work owned by {selectedTeam.name}</span></div><button className="primary" onClick={() => setShowProjectForm(!showProjectForm)}>+ New project</button></div>
+        {showProjectForm && <form className="editor-card" onSubmit={createProject}><div className="form-grid"><label>Name<input autoFocus value={projectForm.name} onChange={(event) => setProjectForm({ ...projectForm, name: event.target.value })} required /></label><label>Status<select value={projectForm.status} onChange={(event) => setProjectForm({ ...projectForm, status: event.target.value })}><option value="planned">Planned</option><option value="in_progress">In progress</option></select></label><label className="wide">Summary<input value={projectForm.summary} onChange={(event) => setProjectForm({ ...projectForm, summary: event.target.value })} /></label><label className="wide">Description<textarea value={projectForm.description} onChange={(event) => setProjectForm({ ...projectForm, description: event.target.value })} /></label><label>Lead<select value={projectForm.lead_user_id} onChange={(event) => setProjectForm({ ...projectForm, lead_user_id: event.target.value })}><option value="">No lead</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label><label>Target date<input type="date" value={projectForm.target_date} onChange={(event) => setProjectForm({ ...projectForm, target_date: event.target.value })} /></label></div><div className="form-actions"><button type="button" className="secondary" onClick={() => setShowProjectForm(false)}>Cancel</button><button className="primary" disabled={busy}>Create project</button></div></form>}
+        <div className="project-grid">{projects.map((project) => <button className="project-card" key={project.id} onClick={() => openProject(project)}><div className="project-card-top"><span className={`project-status ${project.status}`} /> <span>{project.status.replaceAll('_', ' ')}</span><strong>{project.progress_percent}%</strong></div><h2>{project.name}</h2><p>{project.summary || 'Add a short project summary.'}</p><div className="project-progress"><span style={{ width: `${project.progress_percent}%` }} /></div><div className="project-card-meta"><span>{project.issue_count} issues</span><span>{project.milestones.length} milestones</span><span>{project.target_date || 'No target date'}</span></div></button>)}{!projects.length && <div className="empty-panel project-empty"><div className="section-icon">P</div><h3>No projects yet</h3><p>Create a project to connect a brief, milestones, updates, and issues.</p></div>}</div>
       </section>
     );
 
@@ -521,7 +815,7 @@ function App() {
             onToggle={() => setWorkspaceMenuOpen(!workspaceMenuOpen)}
             workspaces={workspaces}
             selected={selectedWorkspace}
-            onSelect={(id) => { setWorkspaceId(id); setTeamId(''); setWorkspaceMenuOpen(false); }}
+            onSelect={(id) => { window.history.pushState({}, '', '/'); setSummaryRoute(null); setWorkspaceId(id); setTeamId(''); setSection('Overview'); setWorkspaceMenuOpen(false); }}
             onCreate={() => { setShowWorkspaceForm(true); setWorkspaceMenuOpen(false); }}
           />
           <button className="icon-button" title="New workspace" aria-label="New workspace" onClick={() => setShowWorkspaceForm(!showWorkspaceForm)}><Icon name="plus" /></button>
@@ -530,14 +824,14 @@ function App() {
         <div className="sidebar-heading"><span>Teams</span>{selectedWorkspace?.my_role !== 'member' && <button className="icon-button compact" aria-label="New team" onClick={() => setShowTeamForm(!showTeamForm)}><Icon name="plus" /></button>}</div>
         {showTeamForm && <form className="compact-form" onSubmit={createTeam}><input placeholder="Team name" value={teamForm.name} onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })} required /><input placeholder="KEY" maxLength="12" value={teamForm.issue_prefix} onChange={(e) => setTeamForm({ ...teamForm, issue_prefix: e.target.value.toUpperCase() })} required /><button className="primary" disabled={busy}>Create team</button></form>}
         <nav className="team-list">
-          {teams.map((team) => <div key={team.id} className={`team-block ${team.id === teamId ? 'active' : ''}`}><button className="team-name" onClick={() => { if (issueRoute) closeIssue(); setTeamId(team.id); setSection('Overview'); }}><span className="team-icon">{team.issue_prefix.slice(0, 1)}</span><span>{team.name}</span><Icon name="chevron" /></button>{team.id === teamId && <div className="team-subnav">{navItems.map((item) => <button key={item.name} className={section === item.name && (!issueRoute || item.name === 'Issues') ? 'selected' : ''} onClick={() => showSection(item.name)}><Icon name={item.icon} /><span>{item.name}</span></button>)}</div>}</div>)}
+          {teams.map((team) => <div key={team.id} className={`team-block ${team.id === teamId ? 'active' : ''}`}><button className="team-name" onClick={() => { if (issueRoute) closeIssue(); if (summaryRoute) { window.history.pushState({}, '', '/'); setSummaryRoute(null); } setTeamId(team.id); setSection('Overview'); }}><span className="team-icon">{team.issue_prefix.slice(0, 1)}</span><span>{team.name}</span><Icon name="chevron" /></button>{team.id === teamId && <div className="team-subnav">{navItems.map((item) => <button key={item.name} className={section === item.name && (!issueRoute || item.name === 'Issues') ? 'selected' : ''} onClick={() => showSection(item.name)}><Icon name={item.icon} /><span>{item.name}</span></button>)}</div>}</div>)}
           {!teams.length && <p className="sidebar-empty">No teams yet</p>}
         </nav>
         <div className="profile"><div className="avatar">{currentUser.name.slice(0, 1).toUpperCase()}</div><div><strong>{currentUser.name}</strong><span>{currentUser.email}</span></div><button className="profile-action" title="Log out" aria-label="Log out" onClick={logout}><Icon name="logout" /></button></div>
       </aside>
       <main className="content">
         {!selectedWorkspace ? <EmptyState title="Create your first workspace" body="A workspace contains your teams and shared product work." action={() => setShowWorkspaceForm(true)} /> : !selectedTeam ? <EmptyState title="Create your first team" body="Teams own issue keys, cycles, projects, and views." action={() => setShowTeamForm(true)} /> : <>
-          <header className="page-header"><div><div className="breadcrumbs">{selectedWorkspace.name} / {selectedTeam.name}{selectedIssue && issueRoute ? ` / ${selectedIssue.key}` : ''}</div><h1>{selectedIssue && issueRoute ? 'Issue detail' : section}</h1></div><span className="role-chip">{selectedTeam.my_role}</span></header>
+          <header className="page-header"><div><div className="breadcrumbs">{selectedWorkspace.name} / {selectedTeam.name}{selectedIssue && issueRoute ? ` / ${selectedIssue.key}` : selectedProject ? ` / ${selectedProject.name}` : ''}</div><h1>{selectedIssue && issueRoute ? 'Issue detail' : selectedProject ? 'Project detail' : section}</h1></div><span className="role-chip">{selectedTeam.my_role}</span></header>
           {planningContent()}
         </>}
         {status && <div className="toast"><span className="toast-dot" />{status}</div>}
@@ -555,6 +849,37 @@ function formatDateTime(value) {
 
 function memberName(members, userId) {
   return members.find((member) => member.user_id === userId)?.name || 'Former member';
+}
+
+function projectToDraft(project) {
+  return {
+    name: project.name,
+    summary: project.summary || '',
+    description: project.description || '',
+    status: project.status,
+    lead_user_id: project.lead_user_id || '',
+    target_date: project.target_date || '',
+  };
+}
+
+function summarySearchParams(filters) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => { if (value !== '') params.set(key, value); });
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+function healthLabel(value) {
+  return ({ on_track: 'On track', at_risk: 'At risk', off_track: 'Off track' })[value] || 'No health set';
+}
+
+function ObjectiveList({ title, items, onToggle }) {
+  return <div className="objective-list"><h3>{title}</h3>{items.map((item) => <button type="button" key={item.id} className={item.is_met ? 'complete' : ''} onClick={() => onToggle(item)}><span>{item.is_met ? '✓' : ''}</span><strong>{item.body}</strong></button>)}{!items.length && <p>No items yet.</p>}</div>;
+}
+
+function SummaryDistribution({ title, rows, labelKey, valueKey = 'count', suffix = '', onSelect }) {
+  const max = Math.max(1, ...rows.map((row) => row[valueKey]));
+  return <section className="summary-card distribution-card"><div className="summary-card-heading"><div><h2>{title}</h2><p>Select a row to filter the full summary.</p></div></div><div className="distribution-list">{rows.map((row, index) => <button key={`${row[labelKey]}-${index}`} onClick={() => onSelect(row)}><div><strong>{row[labelKey]}</strong><span>{row[valueKey]}{suffix}</span></div><i><span style={{ width: `${row[valueKey] / max * 100}%` }} /></i></button>)}{!rows.length && <div className="summary-empty">No matching data.</div>}</div></section>;
 }
 
 function ActivityItem({ item }) {
@@ -612,6 +937,7 @@ function Icon({ name }) {
     chevron: <path d="m9 18 6-6-6-6" />,
     check: <path d="m5 12 4 4L19 6" />,
     overview: <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>,
+    summary: <><path d="M4 19V9M10 19V5M16 19v-7M22 19V3" /><path d="M2 19h22" /></>,
     issues: <><circle cx="12" cy="12" r="8" /><path d="M12 8v5M12 16h.01" /></>,
     cycles: <><path d="M20 11a8 8 0 0 0-14.9-4M4 5v4h4" /><path d="M4 13a8 8 0 0 0 14.9 4M20 19v-4h-4" /></>,
     projects: <><path d="M4 7h6l2 2h8v10H4z" /><path d="M4 7V5h6l2 2" /></>,
