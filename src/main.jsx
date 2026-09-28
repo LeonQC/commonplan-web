@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -110,6 +110,9 @@ function App() {
   const [issueCollaboration, setIssueCollaboration] = useState({ watching: false, watchers: [], sub_issues: [] });
   const [issueDraft, setIssueDraft] = useState({ title: '', description: '' });
   const [commentBody, setCommentBody] = useState('');
+  const [commentMentions, setCommentMentions] = useState([]);
+  const [mentionMenu, setMentionMenu] = useState({ open: false, start: 0, end: 0, query: '', active: 0 });
+  const commentInputRef = useRef(null);
   const [subIssueTitle, setSubIssueTitle] = useState('');
   const [issueLoading, setIssueLoading] = useState(false);
   const [showIssueForm, setShowIssueForm] = useState(false);
@@ -614,14 +617,65 @@ function App() {
     setBusy(true);
     try {
       await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/comments`, {
-        method: 'POST', body: JSON.stringify({ body: commentBody }),
+        method: 'POST', body: JSON.stringify({ body: commentBody, mentioned_user_ids: commentMentions.map((member) => member.user_id) }),
       });
       setCommentBody('');
+      setCommentMentions([]);
+      setMentionMenu((menu) => ({ ...menu, open: false }));
       const activity = await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/activity`);
       setIssueActivity(activity);
       setIssueCollaboration(await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/collaboration`));
       setStatus('Comment added');
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  function mentionCandidates(query = mentionMenu.query) {
+    const normalized = query.trim().toLowerCase();
+    return members.filter((member) => !normalized || member.name.toLowerCase().includes(normalized) || member.email.toLowerCase().includes(normalized));
+  }
+
+  function updateCommentBody(event) {
+    const value = event.target.value;
+    const cursor = event.target.selectionStart;
+    const prefix = value.slice(0, cursor);
+    const match = prefix.match(/(?:^|\s)@([^\s@]*)$/);
+    setCommentBody(value);
+    setCommentMentions((selected) => selected.filter((member) => value.includes(`@${member.name}`)));
+    if (!match) {
+      setMentionMenu((menu) => ({ ...menu, open: false }));
+      return;
+    }
+    setMentionMenu({ open: true, start: prefix.lastIndexOf('@'), end: cursor, query: match[1], active: 0 });
+  }
+
+  function selectMention(member) {
+    const before = commentBody.slice(0, mentionMenu.start);
+    const after = commentBody.slice(mentionMenu.end).replace(/^\s+/, '');
+    const nextBody = `${before}@${member.name} ${after}`;
+    const nextCursor = before.length + member.name.length + 2;
+    setCommentBody(nextBody);
+    setCommentMentions((selected) => selected.some((item) => item.user_id === member.user_id) ? selected : [...selected, member]);
+    setMentionMenu((menu) => ({ ...menu, open: false }));
+    window.requestAnimationFrame(() => {
+      commentInputRef.current?.focus();
+      commentInputRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
+  }
+
+  function handleMentionKeyDown(event) {
+    if (!mentionMenu.open) return;
+    const candidates = mentionCandidates();
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setMentionMenu((menu) => ({ ...menu, open: false }));
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      setMentionMenu((menu) => ({ ...menu, active: candidates.length ? (menu.active + direction + candidates.length) % candidates.length : 0 }));
+    } else if ((event.key === 'Enter' || event.key === 'Tab') && candidates.length) {
+      event.preventDefault();
+      selectMention(candidates[mentionMenu.active] || candidates[0]);
+    }
   }
 
   async function updateComment(commentId, body) {
@@ -823,7 +877,7 @@ function App() {
                 <div className="activity-heading"><div><h2>Activity</h2><p>Comments and changes are recorded chronologically.</p></div><span>{issueActivity.filter((item) => item.event_type !== 'comment.created').length}</span></div>
                 <form className="comment-composer" onSubmit={addComment}>
                   <span className="avatar small-avatar">{currentUser.name.slice(0, 1).toUpperCase()}</span>
-                  <div className="comment-entry"><textarea placeholder="Leave a comment… Use @email to mention a teammate." value={commentBody} onChange={(event) => setCommentBody(event.target.value)} /><div className="mention-shortcuts">{members.filter((member) => member.user_id !== currentUser.id).map((member) => <button type="button" key={member.user_id} onClick={() => setCommentBody(`${commentBody}${commentBody && !commentBody.endsWith(' ') ? ' ' : ''}@${member.email} `)}>@{member.name.split(' ')[0]}</button>)}</div></div>
+                  <div className="comment-entry"><div className="mention-composer"><textarea ref={commentInputRef} placeholder="Leave a comment… Type @ to mention someone." value={commentBody} onChange={updateCommentBody} onKeyDown={handleMentionKeyDown} aria-autocomplete="list" aria-expanded={mentionMenu.open} />{mentionMenu.open && <div className="mention-menu" role="listbox">{mentionCandidates().map((member, index) => <button type="button" role="option" aria-selected={index === mentionMenu.active} className={index === mentionMenu.active ? 'active' : ''} key={member.user_id} onMouseDown={(event) => event.preventDefault()} onClick={() => selectMention(member)}><span className="avatar small-avatar">{member.name.slice(0, 1).toUpperCase()}</span><span><strong>{member.name}{member.user_id === currentUser.id ? ' (You)' : ''}</strong><small>{member.email}</small></span></button>)}{!mentionCandidates().length && <div className="mention-empty">No matching team members</div>}</div>}</div><small className="mention-help">Use @ to notify a teammate or remind yourself.</small></div>
                   <button className="primary" disabled={busy || !commentBody.trim()}>Comment</button>
                 </form>
                 <div className="activity-list">
@@ -873,7 +927,7 @@ function App() {
     );
 
     if (section === 'Inbox') return (
-      <section className="inbox-page"><div className="toolbar"><div><strong>Inbox</strong><span>Mentions and activity from issues you can still access.</span></div><span className="unread-badge">{inbox.unread_count} unread</span></div><div className="inbox-list">{inbox.notifications.map((notification) => <button key={notification.id} className={notification.read_at ? 'read' : 'unread'} onClick={() => markNotificationRead(notification)}><span className="notification-dot" /><div><strong>{notification.payload?.issue_key || 'CommonPlan'} · {notification.kind.replaceAll('_', ' ')}</strong><p>{notification.kind === 'comment' ? 'A teammate mentioned you or commented on a watched issue.' : 'Activity occurred on an issue you watch.'}</p><time>{formatDateTime(notification.created_at)}</time></div></button>)}{!inbox.notifications.length && <div className="empty-panel">Your inbox is clear.</div>}</div></section>
+      <section className="inbox-page"><div className="toolbar"><div><strong>Inbox</strong><span>Mentions and activity from issues you can still access.</span></div><span className="unread-badge">{inbox.unread_count} unread</span></div><div className="inbox-list">{inbox.notifications.map((notification) => <button key={notification.id} className={notification.read_at ? 'read' : 'unread'} onClick={() => markNotificationRead(notification)}><span className="notification-dot" /><div><strong>{notification.payload?.issue_key || 'CommonPlan'} · {notification.kind.replaceAll('_', ' ')}</strong><p>{notification.kind === 'self_mention' ? 'You left yourself a reminder on this issue.' : notification.kind === 'comment' ? 'A teammate mentioned you or commented on a watched issue.' : 'Activity occurred on an issue you watch.'}</p><time>{formatDateTime(notification.created_at)}</time></div></button>)}{!inbox.notifications.length && <div className="empty-panel">Your inbox is clear.</div>}</div></section>
     );
 
     if (section === 'Projects' && selectedProject) {

@@ -301,7 +301,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .issue-description-input:focus { border-color: transparent; background: #fafafd; box-shadow: 0 0 0 3px rgba(94, 92, 230, .07); }
 .copy-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
 .copy-actions span { color: #9a9ca6; font-size: 9px; }
-.activity-card { overflow: hidden; }
+.activity-card { overflow: visible; }
 .activity-heading { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
 .activity-heading h2, .properties-heading h2 { margin: 0; color: #34353e; font-size: 13px; }
 .activity-heading p { margin: 4px 0 0; color: #92949e; font-size: 9px; }
@@ -309,8 +309,15 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .comment-composer { grid-template-columns: 28px minmax(0, 1fr) auto; align-items: start; gap: 9px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
 .comment-composer textarea { min-height: 74px; }
 .comment-entry { display: grid; gap: 6px; }
-.mention-shortcuts { display: flex; flex-wrap: wrap; gap: 5px; }
-.mention-shortcuts button { padding: 3px 6px; border: 1px solid #e4e3eb; border-radius: 5px; background: #fafafe; color: #7774de; font-size: 8px; }
+.mention-composer { position: relative; }
+.mention-menu { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 5px); max-height: 220px; overflow-y: auto; padding: 5px; border: 1px solid var(--line); border-radius: 10px; background: white; box-shadow: var(--shadow-menu); }
+.mention-menu button { width: 100%; display: flex; align-items: center; gap: 9px; padding: 7px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--ink); text-align: left; }
+.mention-menu button:hover, .mention-menu button.active { background: var(--accent-soft); }
+.mention-menu button > span:last-child { min-width: 0; display: grid; gap: 1px; }
+.mention-menu strong { overflow: hidden; font-size: 11px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
+.mention-menu small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.mention-empty { padding: 10px; color: var(--muted); font-size: 10px; text-align: center; }
+.mention-help { color: var(--muted); font-size: 9px; }
 .small-avatar { width: 28px; height: 28px; font-size: 9px; }
 .comment-composer .primary { align-self: end; }
 .activity-list { padding: 5px 20px 12px; }
