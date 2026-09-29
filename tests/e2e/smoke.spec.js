@@ -28,6 +28,18 @@ test('registration reaches workspace navigation and preserves scope boundaries',
 
   await expect(page.locator('.team-subnav')).toContainText('Members');
   await expect(page.locator('.workspace-nav')).not.toContainText('Members');
+
+  await page.locator('.team-subnav').getByRole('button', { name: 'Cycles' }).click();
+  await expect(page.getByRole('heading', { name: 'Cycle schedule' })).toBeVisible();
+  await page.getByLabel('Enabled').check();
+  await page.getByLabel('Each cycle lasts').selectOption('2');
+  await page.getByLabel('Keep upcoming').selectOption('2');
+  await page.getByLabel('Schedule starts').fill(new Date().toISOString().slice(0, 10));
+  await page.getByRole('button', { name: 'Save schedule' }).click();
+  await expect(page.locator('.cycle-card')).toHaveCount(3);
+  await page.locator('.cycle-card').first().click();
+  await expect(page.getByText('SPRINT BOARD')).toBeVisible();
+  await expect(page.locator('.cycle-kanban .kanban-column')).toHaveCount(4);
 });
 
 test('login screen exposes password and optional Google flows', async ({ page }) => {

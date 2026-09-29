@@ -101,8 +101,7 @@ function App() {
   const [inbox, setInbox] = useState({ unread_count: 0, notifications: [] });
   const [myIssues, setMyIssues] = useState([]);
   const [selectedCycle, setSelectedCycle] = useState(null);
-  const [cycleDashboard, setCycleDashboard] = useState(null);
-  const [cycleDashboardLoading, setCycleDashboardLoading] = useState(false);
+  const [cycleSettings, setCycleSettings] = useState({ enabled: false, duration_weeks: 2, upcoming_cycle_count: 3, next_cycle_starts_on: '', rollover_incomplete: true });
   const [selectedProject, setSelectedProject] = useState(null);
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [projectForm, setProjectForm] = useState({ name: '', summary: '', description: '', status: 'planned', lead_user_id: '', target_date: '' });
@@ -187,10 +186,11 @@ function App() {
   async function loadPlanning(selectedWorkspaceId, selectedTeamId) {
     if (!selectedWorkspaceId || !selectedTeamId) return;
     const base = `/api/v1/workspaces/${selectedWorkspaceId}/teams/${selectedTeamId}`;
-    const [nextOverview, nextStates, nextCycles, nextLabels, nextIssues, nextMembers, nextProjects] = await Promise.all([
+    const [nextOverview, nextStates, nextCycles, nextCycleSettings, nextLabels, nextIssues, nextMembers, nextProjects] = await Promise.all([
       request(`${base}/overview`),
       request(`${base}/workflow-states`),
       request(`${base}/cycles`),
+      request(`${base}/cycle-settings`),
       request(`${base}/labels`),
       request(`${base}/issues`),
       request(`${base}/members`),
@@ -199,10 +199,15 @@ function App() {
     setOverview(nextOverview);
     setWorkflowStates(nextStates);
     setCycles(nextCycles);
+    setCycleSettings({ ...nextCycleSettings, next_cycle_starts_on: nextCycleSettings.next_cycle_starts_on || '' });
     setLabels(nextLabels);
     setIssues(nextIssues);
     setMembers(nextMembers);
     setProjects(nextProjects);
+    if (selectedCycle) {
+      const refreshedCycle = nextCycles.find((cycle) => cycle.id === selectedCycle.id);
+      if (refreshedCycle) setSelectedCycle(refreshedCycle);
+    }
     if (selectedProject) {
       const refreshed = nextProjects.find((project) => project.id === selectedProject.id);
       if (refreshed) {
@@ -258,16 +263,6 @@ function App() {
 
   async function openCycle(cycle) {
     setSelectedCycle(cycle);
-    setCycleDashboard(null);
-    setCycleDashboardLoading(true);
-    try {
-      const timezone = encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
-      setCycleDashboard(await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/summary?cycle=${cycle.id}&timezone=${timezone}`));
-    } catch (error) {
-      setStatus(error.message);
-    } finally {
-      setCycleDashboardLoading(false);
-    }
   }
 
   async function loadSettingsData() {
@@ -435,7 +430,7 @@ function App() {
   function showSection(nextSection) {
     if (issueRoute) closeIssue();
     if (nextSection !== 'Projects') setSelectedProject(null);
-    if (nextSection !== 'Cycles') { setSelectedCycle(null); setCycleDashboard(null); }
+    if (nextSection !== 'Cycles') setSelectedCycle(null);
     if (nextSection === 'Summary') {
       const route = { workspaceId, teamId };
       const params = summarySearchParams(summaryFilters);
@@ -668,6 +663,45 @@ function App() {
       await loadPlanning(workspaceId, teamId);
       setStatus('Cycle created');
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function saveCycleSettings(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/cycle-settings`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          enabled: cycleSettings.enabled,
+          duration_weeks: Number(cycleSettings.duration_weeks),
+          upcoming_cycle_count: Number(cycleSettings.upcoming_cycle_count),
+          next_cycle_starts_on: cycleSettings.next_cycle_starts_on || null,
+          rollover_incomplete: cycleSettings.rollover_incomplete,
+        }),
+      });
+      await loadPlanning(workspaceId, teamId);
+      setStatus('Cycle schedule updated');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function moveCycleIssue(issue, workflowStateId) {
+    if (issue.workflow_state_id === workflowStateId) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/issues/${issue.key}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ version: issue.version, workflow_state_id: workflowStateId }),
+      });
+      await loadPlanning(workspaceId, teamId);
+      setStatus(`Moved ${issue.key}`);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  function createIssueInCycleState(workflowStateId) {
+    setIssueForm({ ...issueForm, workflow_state_id: workflowStateId, cycle_id: selectedCycle.id });
+    setSelectedCycle(null);
+    setShowIssueForm(true);
+    showSection('Issues');
   }
 
   async function createLabel(event) {
@@ -1242,23 +1276,24 @@ function App() {
     );
 
     if (section === 'Cycles' && selectedCycle) {
-      const data = cycleDashboard;
+      const cycleIssues = issues.filter((issue) => issue.cycle_id === selectedCycle.id);
+      const doneStateIds = new Set(workflowStates.filter((state) => state.category === 'done').map((state) => state.id));
+      const completed = cycleIssues.filter((issue) => doneStateIds.has(issue.workflow_state_id)).length;
+      const percent = cycleIssues.length ? Math.round(completed * 100 / cycleIssues.length) : 0;
       return (
-        <section className="cycle-dashboard-page">
-          <button className="back-button" onClick={() => { setSelectedCycle(null); setCycleDashboard(null); }}>← All cycles</button>
-          <header className="cycle-dashboard-header"><div><span className="eyebrow">CYCLE DASHBOARD</span><h2>{selectedCycle.name}</h2><p>{new Date(`${selectedCycle.starts_on}T00:00:00`).toLocaleDateString()} — {new Date(`${selectedCycle.ends_on}T00:00:00`).toLocaleDateString()}</p></div>{data?.cycle_progress && <div className="cycle-completion"><strong>{data.cycle_progress.percent}%</strong><span>{data.cycle_progress.completed} of {data.cycle_progress.total} completed</span></div>}</header>
-          {cycleDashboardLoading ? <div className="issue-detail-loading"><div className="spinner" />Loading cycle dashboard…</div> : !data ? <div className="empty-panel">Cycle dashboard is unavailable.</div> : <>
-            <div className="summary-metrics">{Object.entries({ total: 'Issues', open: 'Open', in_progress: 'In progress', completed: 'Completed', overdue: 'Overdue', unassigned: 'Unassigned' }).map(([key, label]) => <Metric key={key} label={label} value={data.headline_metrics[key]} />)}</div>
-            <div className="summary-grid"><SummaryDistribution title="Status distribution" rows={data.status_distribution} labelKey="label" /><SummaryDistribution title="Priority distribution" rows={data.priority_distribution} labelKey="label" /><SummaryDistribution title="Assignee workload" rows={data.assignee_distribution} labelKey="name" /><SummaryDistribution title="Project progress" rows={data.project_distribution} labelKey="name" valueKey="percent" suffix="%" /></div>
-            <section className="summary-card"><div className="summary-card-heading"><div><h2>Cycle issues</h2><p>Every issue currently planned into this cycle.</p></div><span>{data.matching_issues.length}</span></div><div className="summary-issue-list">{data.matching_issues.map((issue) => <button className="issue-row" key={issue.id} onClick={() => openIssue(issue)}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.status} /></button>)}{!data.matching_issues.length && <div className="summary-empty">No issues are assigned to this cycle yet.</div>}</div></section>
-          </>}
+        <section className="cycle-board-page">
+          <div className="cycle-board-toolbar"><button className="back-button" onClick={() => setSelectedCycle(null)}>← All cycles</button><div><span className="eyebrow">SPRINT BOARD</span><h2>{selectedCycle.name}</h2><p>{new Date(`${selectedCycle.starts_on}T00:00:00`).toLocaleDateString()} — {new Date(`${selectedCycle.ends_on}T00:00:00`).toLocaleDateString()}</p></div><div className="cycle-board-progress"><strong>{percent}%</strong><span>{completed}/{cycleIssues.length} completed</span><i><span style={{ width: `${percent}%` }} /></i></div></div>
+          <div className="cycle-kanban">{workflowStates.map((state) => { const stateIssues = cycleIssues.filter((issue) => issue.workflow_state_id === state.id); return <section className={`kanban-column category-${state.category}`} key={state.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const issue = cycleIssues.find((row) => row.id === event.dataTransfer.getData('text/plain')); if (issue) moveCycleIssue(issue, state.id); }}><header><div><StateBadge name={state.name} /><span>{stateIssues.length}</span></div><button aria-label={`Create issue in ${state.name}`} onClick={() => createIssueInCycleState(state.id)}>+</button></header><div className="kanban-cards">{stateIssues.map((issue) => <article className="kanban-card" key={issue.id} draggable onDragStart={(event) => event.dataTransfer.setData('text/plain', issue.id)} onClick={() => openIssue(issue)} tabIndex="0" role="button"><div><span className="priority-dot" data-priority={issue.priority} /><span className="issue-key">{issue.key}</span></div><h3>{issue.title}</h3><footer><span>{issue.assignee_user_id ? memberName(members, issue.assignee_user_id) : 'Unassigned'}</span>{issue.due_date && <time>{issue.due_date}</time>}</footer></article>)}{!stateIssues.length && <div className="kanban-empty">Drop issues here</div>}</div></section>; })}</div>
         </section>
       );
     }
 
-    if (section === 'Cycles') return (
-      <section className="cycle-page"><div className="cycle-grid">{cycles.map((cycle) => <button type="button" className="cycle-card" key={cycle.id} onClick={() => openCycle(cycle)}><div className="cycle-icon">◒</div><h3>{cycle.name}</h3><p>{new Date(`${cycle.starts_on}T00:00:00`).toLocaleDateString()} — {new Date(`${cycle.ends_on}T00:00:00`).toLocaleDateString()}</p><span className="cycle-card-action">Open dashboard →</span></button>)}{!cycles.length && <div className="empty-panel cycle-empty"><div className="section-icon">C</div><h3>No cycles yet</h3><p>Create a time-boxed planning window for this team.</p></div>}</div><form className="editor-card cycle-form" onSubmit={createCycle}><h2>Create a cycle</h2><p>Cycles are non-overlapping, time-boxed planning windows.</p><label>Name<input value={cycleForm.name} onChange={(e) => setCycleForm({ ...cycleForm, name: e.target.value })} required /></label><div className="two-columns"><label>Starts on<input type="date" value={cycleForm.starts_on} onChange={(e) => setCycleForm({ ...cycleForm, starts_on: e.target.value })} required /></label><label>Ends on<input type="date" value={cycleForm.ends_on} onChange={(e) => setCycleForm({ ...cycleForm, ends_on: e.target.value })} required /></label></div><button className="primary" disabled={busy}>Create cycle</button></form></section>
-    );
+    if (section === 'Cycles') {
+      const canManageCycles = ['owner', 'admin'].includes(selectedWorkspace.my_role) || selectedTeam.my_role === 'lead';
+      return (
+        <section className="cycle-page"><div className="cycle-grid">{cycles.map((cycle) => { const cycleIssues = issues.filter((issue) => issue.cycle_id === cycle.id); const completed = cycleIssues.filter((issue) => workflowStates.find((state) => state.id === issue.workflow_state_id)?.category === 'done').length; const percent = cycleIssues.length ? Math.round(completed * 100 / cycleIssues.length) : 0; return <button type="button" className="cycle-card" key={cycle.id} onClick={() => openCycle(cycle)}><div className="cycle-card-top"><div className="cycle-icon">◒</div><span>{cycle.completed_at ? 'Completed' : new Date(`${cycle.starts_on}T00:00:00`) > new Date() ? 'Upcoming' : 'Active'}</span></div><h3>{cycle.name}</h3><p>{new Date(`${cycle.starts_on}T00:00:00`).toLocaleDateString()} — {new Date(`${cycle.ends_on}T00:00:00`).toLocaleDateString()}</p><div className="project-progress"><span style={{ width: `${percent}%` }} /></div><small>{completed}/{cycleIssues.length} completed</small><span className="cycle-card-action">Open board →</span></button>; })}{!cycles.length && <div className="empty-panel cycle-empty"><div className="section-icon">C</div><h3>No cycles yet</h3><p>Enable the repeating schedule to create this Team's sprint cadence.</p></div>}</div><div className="cycle-settings-stack"><form className="editor-card cycle-form" onSubmit={saveCycleSettings}><div className="cycle-settings-heading"><div><span className="eyebrow">TEAM SETTINGS</span><h2>Cycle schedule</h2></div><label className="toggle-field"><input type="checkbox" checked={cycleSettings.enabled} onChange={(event) => setCycleSettings({ ...cycleSettings, enabled: event.target.checked })} /><span>Enabled</span></label></div><p>Automatically maintain a rolling set of upcoming cycles.</p><label>Each cycle lasts<select value={cycleSettings.duration_weeks} onChange={(event) => setCycleSettings({ ...cycleSettings, duration_weeks: event.target.value })}>{[1, 2, 3, 4, 6, 8].map((weeks) => <option key={weeks} value={weeks}>{weeks} week{weeks > 1 ? 's' : ''}</option>)}</select></label><label>Keep upcoming<select value={cycleSettings.upcoming_cycle_count} onChange={(event) => setCycleSettings({ ...cycleSettings, upcoming_cycle_count: event.target.value })}>{[1, 2, 3, 4, 5, 6, 8, 10, 15].map((count) => <option key={count} value={count}>{count} cycle{count > 1 ? 's' : ''}</option>)}</select></label><label>Schedule starts<input type="date" value={cycleSettings.next_cycle_starts_on} onChange={(event) => setCycleSettings({ ...cycleSettings, next_cycle_starts_on: event.target.value })} required={cycleSettings.enabled} /></label><label className="settings-checkbox"><input type="checkbox" checked={cycleSettings.rollover_incomplete} onChange={(event) => setCycleSettings({ ...cycleSettings, rollover_incomplete: event.target.checked })} />Move unfinished issues into the next cycle</label><button className="primary" disabled={busy || !canManageCycles}>Save schedule</button></form>{canManageCycles && <details className="manual-cycle"><summary>Create or adjust a one-off cycle</summary><form className="editor-card cycle-form" onSubmit={createCycle}><label>Name<input value={cycleForm.name} onChange={(e) => setCycleForm({ ...cycleForm, name: e.target.value })} required /></label><div className="two-columns"><label>Starts on<input type="date" value={cycleForm.starts_on} onChange={(e) => setCycleForm({ ...cycleForm, starts_on: e.target.value })} required /></label><label>Ends on<input type="date" value={cycleForm.ends_on} onChange={(e) => setCycleForm({ ...cycleForm, ends_on: e.target.value })} required /></label></div><button className="secondary" disabled={busy}>Create cycle</button></form></details>}</div></section>
+      );
+    }
 
     return <section className="empty-panel large-panel"><div className="section-icon">{section.slice(0, 1)}</div><h2>{section}</h2><p>This Team-scoped destination is ready for its next milestone.</p></section>;
   }
