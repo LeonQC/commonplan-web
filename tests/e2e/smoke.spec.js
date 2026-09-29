@@ -15,6 +15,19 @@ test('registration reaches workspace navigation and preserves scope boundaries',
   await expect(page.locator('.workspace-nav')).toContainText('Inbox');
   await expect(page.locator('.workspace-nav')).toContainText('Settings');
   await expect(page.locator('.team-list')).not.toContainText('Inbox');
+
+  await page.getByRole('button', { name: 'Get started' }).click();
+  await page.getByPlaceholder('Workspace name').fill('Scope Test');
+  await page.getByPlaceholder('workspace-slug').fill(`scope-${unique}`);
+  await page.locator('.compact-form').getByRole('button', { name: 'Create' }).click();
+  await expect(page.getByText('Create your first team')).toBeVisible();
+  await page.getByRole('button', { name: 'Get started' }).click();
+  await page.getByPlaceholder('Team name').fill('Core Team');
+  await page.getByPlaceholder('KEY').fill('CORE');
+  await page.locator('.compact-form').getByRole('button', { name: 'Create team' }).click();
+
+  await expect(page.locator('.team-subnav')).toContainText('Members');
+  await expect(page.locator('.workspace-nav')).not.toContainText('Members');
 });
 
 test('login screen exposes password and optional Google flows', async ({ page }) => {

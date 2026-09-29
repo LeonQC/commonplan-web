@@ -471,7 +471,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .settings-card-heading > div { display: grid; gap: 4px; }
 .member-admin-stack { display: grid; gap: 14px; }
 .member-invite-form { display: grid; grid-template-columns: minmax(180px, 1.5fr) 130px 150px auto; gap: 8px; align-items: end; padding: 14px; border: 1px solid #e6e5f3; border-radius: 9px; background: #fafaff; }
+.member-invite-form.workspace-only { grid-template-columns: minmax(220px, 1fr) 150px auto; }
 .team-member-add { display: grid; grid-template-columns: minmax(220px, 1fr) 130px auto; gap: 8px; align-items: end; padding: 14px; border: 1px solid #e6e5f3; border-radius: 9px; background: #fafaff; }
+.team-members-page { max-width: 980px; margin: 20px auto; }
 .invitation-result { display: grid; grid-template-columns: minmax(130px, auto) minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 11px 13px; border: 1px solid #d9e9df; border-radius: 8px; background: #f5fbf7; }
 .invitation-result > div { display: grid; gap: 2px; }
 .invitation-result small { color: var(--muted); font-size: 8px; }
