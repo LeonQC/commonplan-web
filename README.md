@@ -20,6 +20,17 @@ GitHub pull-request links and integration health are supplied by the API. For lo
 pnpm build
 ```
 
+## Browser end-to-end checks
+
+The Playwright suite runs against the complete local API/Auth/Web stack. Start the API stack and this Web app first, then install the browser once and run:
+
+```bash
+pnpm exec playwright install chromium
+pnpm test:e2e
+```
+
+Use `pnpm test:e2e:ui` for the interactive runner. CI retains traces, screenshots, and video on failure. The initial fast-feedback project uses Chromium; add Firefox and WebKit once the critical-path suite is stable.
+
 ## Design
 
 The latest [KEY-3 UI design PDF](output/pdf/KEY-3-zhitong-ui-design.pdf) is included here, with its [generator](design/generate_ui_pdf.py). This is the 16-page version that includes GitHub pull-request linking.

@@ -100,6 +100,9 @@ function App() {
   const [viewForm, setViewForm] = useState({ name: '', visibility: 'private' });
   const [inbox, setInbox] = useState({ unread_count: 0, notifications: [] });
   const [myIssues, setMyIssues] = useState([]);
+  const [selectedCycle, setSelectedCycle] = useState(null);
+  const [cycleDashboard, setCycleDashboard] = useState(null);
+  const [cycleDashboardLoading, setCycleDashboardLoading] = useState(false);
   const [selectedProject, setSelectedProject] = useState(null);
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [projectForm, setProjectForm] = useState({ name: '', summary: '', description: '', status: 'planned', lead_user_id: '', target_date: '' });
@@ -121,6 +124,11 @@ function App() {
   const [issueLoading, setIssueLoading] = useState(false);
   const [githubHealth, setGitHubHealth] = useState(null);
   const [githubHealthLoading, setGitHubHealthLoading] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('profile');
+  const [workspaceMembers, setWorkspaceMembers] = useState([]);
+  const [workspacePolicy, setWorkspacePolicy] = useState({ allow_member_invites: false, default_timezone: 'UTC', domain_policy: 'invite_only' });
+  const [profileDraft, setProfileDraft] = useState({ name: '' });
+  const [workspaceDraft, setWorkspaceDraft] = useState({ name: '', description: '' });
   const [showIssueForm, setShowIssueForm] = useState(false);
   const [issueForm, setIssueForm] = useState({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', project_id: '', milestone_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
   const [cycleForm, setCycleForm] = useState({ name: '', starts_on: '', ends_on: '' });
@@ -246,6 +254,52 @@ function App() {
     }
   }
 
+  async function openCycle(cycle) {
+    setSelectedCycle(cycle);
+    setCycleDashboard(null);
+    setCycleDashboardLoading(true);
+    try {
+      const timezone = encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+      setCycleDashboard(await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/summary?cycle=${cycle.id}&timezone=${timezone}`));
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setCycleDashboardLoading(false);
+    }
+  }
+
+  async function loadSettingsData() {
+    const [rows, policy] = await Promise.all([
+      request(`/api/v1/workspaces/${workspaceId}/members`),
+      request(`/api/v1/workspaces/${workspaceId}/settings`),
+    ]);
+    setWorkspaceMembers(rows);
+    setWorkspacePolicy(policy);
+  }
+
+  async function saveProfile(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const updated = await request(`/users/${currentUser.id}`, { method: 'PATCH', body: JSON.stringify({ name: profileDraft.name }) });
+      setCurrentUser(updated);
+      setStatus('Profile updated');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function saveWorkspace(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const [updated] = await Promise.all([
+        request(`/api/v1/workspaces/${workspaceId}`, { method: 'PATCH', body: JSON.stringify(workspaceDraft) }),
+        request(`/api/v1/workspaces/${workspaceId}/settings`, { method: 'PATCH', body: JSON.stringify({ allow_member_invites: workspacePolicy.allow_member_invites, default_timezone: workspacePolicy.default_timezone, domain_policy: workspacePolicy.domain_policy }) }),
+      ]);
+      setWorkspaces((rows) => rows.map((row) => row.id === updated.id ? updated : row));
+      setStatus('Workspace updated');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
   function applySummaryFilters(changes) {
     const next = { ...summaryFilters, ...changes };
     setSummaryFilters(next);
@@ -311,6 +365,7 @@ function App() {
   function showSection(nextSection) {
     if (issueRoute) closeIssue();
     if (nextSection !== 'Projects') setSelectedProject(null);
+    if (nextSection !== 'Cycles') { setSelectedCycle(null); setCycleDashboard(null); }
     if (nextSection === 'Summary') {
       const route = { workspaceId, teamId };
       const params = summarySearchParams(summaryFilters);
@@ -375,8 +430,20 @@ function App() {
     if (section === 'Views') loadViews().catch((error) => setStatus(error.message));
     if (section === 'Inbox') loadInbox().catch((error) => setStatus(error.message));
     if (section === 'My Issues') loadMyIssues().catch((error) => setStatus(error.message));
-    if (section === 'Settings') loadGitHubHealth();
+    if (section === 'Settings') {
+      loadGitHubHealth();
+      loadSettingsData().catch((error) => setStatus(error.message));
+    }
   }, [currentUser, workspaceId, section]);
+
+  useEffect(() => {
+    setProfileDraft({ name: currentUser?.name || '' });
+  }, [currentUser?.id, currentUser?.name]);
+
+  useEffect(() => {
+    const workspace = workspaces.find((item) => item.id === workspaceId);
+    setWorkspaceDraft({ name: workspace?.name || '', description: workspace?.description || '' });
+  }, [workspaceId, workspaces]);
 
   useEffect(() => {
     if (!currentUser || !issueRoute) return;
@@ -826,11 +893,14 @@ function App() {
     { name: 'Issues', icon: 'issues' },
     { name: 'Cycles', icon: 'cycles' },
     { name: 'Projects', icon: 'projects' },
+  ];
+  const workspaceNavItems = [
     { name: 'My Issues', icon: 'issues' },
     { name: 'Views', icon: 'views' },
     { name: 'Inbox', icon: 'inbox' },
     { name: 'Settings', icon: 'settings' },
   ];
+  const workspaceSections = new Set(workspaceNavItems.map((item) => item.name));
 
   function planningContent() {
     if (section === 'Overview') return (
@@ -1009,16 +1079,21 @@ function App() {
 
     if (section === 'Settings') return (
       <section className="workspace-settings-page">
-        <div className="settings-title"><div><span className="eyebrow">WORKSPACE SETTINGS</span><h2>Applications</h2><p>Manage services connected to {selectedWorkspace.name}.</p></div></div>
-        <article className="integration-card">
+        <div className="settings-title"><div><span className="eyebrow">SETTINGS</span><h2>{settingsTab === 'profile' ? 'Your profile' : settingsTab === 'workspace' ? 'Workspace profile' : settingsTab === 'members' ? 'Members' : 'Applications'}</h2><p>Personal settings belong to you; workspace settings apply to everyone in {selectedWorkspace.name}.</p></div></div>
+        <div className="settings-layout"><nav className="settings-nav"><span>Personal</span><button className={settingsTab === 'profile' ? 'selected' : ''} onClick={() => setSettingsTab('profile')}>Profile</button><button disabled title="Managed by the Auth Service">Security & access</button><button disabled title="Managed by the Auth Service">Connected accounts</button><span>Workspace</span><button className={settingsTab === 'workspace' ? 'selected' : ''} onClick={() => setSettingsTab('workspace')}>General</button><button className={settingsTab === 'members' ? 'selected' : ''} onClick={() => setSettingsTab('members')}>Members</button><button className={settingsTab === 'applications' ? 'selected' : ''} onClick={() => setSettingsTab('applications')}>Applications</button></nav><div className="settings-content">
+        {settingsTab === 'profile' && <form className="settings-card" onSubmit={saveProfile}><h3>Profile</h3><p>This information follows your account across workspaces.</p><label>Display name<input value={profileDraft.name} onChange={(event) => setProfileDraft({ name: event.target.value })} required /></label><label>Email<input value={currentUser.email} disabled /></label><div className="form-actions"><button className="primary" disabled={busy}>Save profile</button></div></form>}
+        {settingsTab === 'workspace' && <form className="settings-card" onSubmit={saveWorkspace}><h3>Workspace profile</h3><p>Only workspace owners and admins can change shared details and access policy.</p><label>Name<input value={workspaceDraft.name} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, name: event.target.value })} required /></label><label>Description<textarea value={workspaceDraft.description} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, description: event.target.value })} /></label><label>Default timezone<input value={workspacePolicy.default_timezone} onChange={(event) => setWorkspacePolicy({ ...workspacePolicy, default_timezone: event.target.value })} placeholder="UTC" /></label><label>Domain policy<select value={workspacePolicy.domain_policy} onChange={(event) => setWorkspacePolicy({ ...workspacePolicy, domain_policy: event.target.value })}><option value="invite_only">Invite only</option><option value="verified_domains">Verified domains</option></select></label><label className="settings-checkbox"><input type="checkbox" checked={workspacePolicy.allow_member_invites} onChange={(event) => setWorkspacePolicy({ ...workspacePolicy, allow_member_invites: event.target.checked })} />Allow members to invite teammates</label><div className="form-actions"><button className="primary" disabled={busy || selectedWorkspace.my_role === 'member'}>Save workspace</button></div></form>}
+        {settingsTab === 'members' && <article className="settings-card"><h3>Workspace members</h3><p>Membership is workspace-wide. Team membership only controls access to an individual team.</p><div className="member-settings-list">{workspaceMembers.map((member) => <div key={member.user_id}><span className="avatar small-avatar">{member.name.slice(0, 1).toUpperCase()}</span><div><strong>{member.name}</strong><small>{member.email}</small></div><span className="role-chip">{member.role}</span></div>)}</div></article>}
+        {settingsTab === 'applications' && <article className="integration-card">
           <header><div className="github-mark">GH</div><div><h3>GitHub</h3><p>Automatically link pull requests to CommonPlan issues by item key.</p></div>{githubHealthLoading ? <span className="integration-status checking">Checking…</span> : <span className={`integration-status ${githubHealth?.configured ? 'connected' : 'setup'}`}>{githubHealth?.configured ? 'Connected' : 'Setup required'}</span>}</header>
           {githubHealth?.forbidden ? <div className="integration-permission"><strong>Workspace admin access required</strong><p>{githubHealth.message}</p></div> : <>
             <div className="integration-facts"><div><span>GitHub owner</span><strong>{githubHealth?.owner_login || 'Not configured'}</strong></div><div><span>Subscribed event</span><strong>Pull requests</strong></div><div><span>Last delivery</span><strong>{githubHealth?.last_delivery ? formatDateTime(githubHealth.last_delivery.received_at) : 'No delivery yet'}</strong></div><div><span>Last result</span><strong className={githubHealth?.last_delivery?.status || ''}>{githubHealth?.last_delivery?.status || 'Waiting'}</strong></div></div>
-            <div className="integration-rule"><span>LINKING RULE</span><p>A PR title such as <code>{selectedTeam.issue_prefix}-12 Improve saved views</code> links to that issue. Repository-to-project mapping is intentionally not used.</p></div>
+            <div className="integration-rule"><span>LINKING RULE</span><p>A PR title containing any issue key in this workspace, such as <code>TA-12 Improve saved views</code>, links to that issue. Repository-to-project mapping is intentionally not used.</p></div>
             <div className="webhook-setup"><div><h4>Local webhook setup</h4><p>GitHub cannot send directly to localhost. Use a public forwarding URL during development and keep its forwarding daemon running.</p></div><ol><li>Create a smee.io channel and use its HTTPS URL as GitHub’s payload URL.</li><li>Choose <strong>application/json</strong>, add a high-entropy secret, and select only <strong>Pull requests</strong>.</li><li>Run <code>smee --url YOUR_SMEE_URL --target {API_BASE_URL}/webhooks/github</code>.</li><li>Put the same secret and allowed owner/workspace IDs in the API environment, restart, then redeliver GitHub’s ping.</li></ol><div className="webhook-endpoint"><span>Local target</span><code>{API_BASE_URL}/webhooks/github</code></div></div>
           </>}
           <footer><a href="https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/testing-webhooks" target="_blank" rel="noreferrer">GitHub local testing guide ↗</a><button className="secondary" onClick={loadGitHubHealth} disabled={githubHealthLoading}>Refresh status</button></footer>
-        </article>
+        </article>}
+        </div></div>
       </section>
     );
 
@@ -1064,8 +1139,23 @@ function App() {
       </section>
     );
 
+    if (section === 'Cycles' && selectedCycle) {
+      const data = cycleDashboard;
+      return (
+        <section className="cycle-dashboard-page">
+          <button className="back-button" onClick={() => { setSelectedCycle(null); setCycleDashboard(null); }}>← All cycles</button>
+          <header className="cycle-dashboard-header"><div><span className="eyebrow">CYCLE DASHBOARD</span><h2>{selectedCycle.name}</h2><p>{new Date(`${selectedCycle.starts_on}T00:00:00`).toLocaleDateString()} — {new Date(`${selectedCycle.ends_on}T00:00:00`).toLocaleDateString()}</p></div>{data?.cycle_progress && <div className="cycle-completion"><strong>{data.cycle_progress.percent}%</strong><span>{data.cycle_progress.completed} of {data.cycle_progress.total} completed</span></div>}</header>
+          {cycleDashboardLoading ? <div className="issue-detail-loading"><div className="spinner" />Loading cycle dashboard…</div> : !data ? <div className="empty-panel">Cycle dashboard is unavailable.</div> : <>
+            <div className="summary-metrics">{Object.entries({ total: 'Issues', open: 'Open', in_progress: 'In progress', completed: 'Completed', overdue: 'Overdue', unassigned: 'Unassigned' }).map(([key, label]) => <Metric key={key} label={label} value={data.headline_metrics[key]} />)}</div>
+            <div className="summary-grid"><SummaryDistribution title="Status distribution" rows={data.status_distribution} labelKey="label" /><SummaryDistribution title="Priority distribution" rows={data.priority_distribution} labelKey="label" /><SummaryDistribution title="Assignee workload" rows={data.assignee_distribution} labelKey="name" /><SummaryDistribution title="Project progress" rows={data.project_distribution} labelKey="name" valueKey="percent" suffix="%" /></div>
+            <section className="summary-card"><div className="summary-card-heading"><div><h2>Cycle issues</h2><p>Every issue currently planned into this cycle.</p></div><span>{data.matching_issues.length}</span></div><div className="summary-issue-list">{data.matching_issues.map((issue) => <button className="issue-row" key={issue.id} onClick={() => openIssue(issue)}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.status} /></button>)}{!data.matching_issues.length && <div className="summary-empty">No issues are assigned to this cycle yet.</div>}</div></section>
+          </>}
+        </section>
+      );
+    }
+
     if (section === 'Cycles') return (
-      <section className="cycle-page"><div className="cycle-grid">{cycles.map((cycle) => <article className="cycle-card" key={cycle.id}><div className="cycle-icon">◒</div><h3>{cycle.name}</h3><p>{new Date(`${cycle.starts_on}T00:00:00`).toLocaleDateString()} — {new Date(`${cycle.ends_on}T00:00:00`).toLocaleDateString()}</p><div className="progress-track"><span /></div></article>)}{!cycles.length && <div className="empty-panel cycle-empty"><div className="section-icon">C</div><h3>No cycles yet</h3><p>Create a time-boxed planning window for this team.</p></div>}</div><form className="editor-card cycle-form" onSubmit={createCycle}><h2>Create a cycle</h2><p>Cycles are non-overlapping, time-boxed planning windows.</p><label>Name<input value={cycleForm.name} onChange={(e) => setCycleForm({ ...cycleForm, name: e.target.value })} required /></label><div className="two-columns"><label>Starts on<input type="date" value={cycleForm.starts_on} onChange={(e) => setCycleForm({ ...cycleForm, starts_on: e.target.value })} required /></label><label>Ends on<input type="date" value={cycleForm.ends_on} onChange={(e) => setCycleForm({ ...cycleForm, ends_on: e.target.value })} required /></label></div><button className="primary" disabled={busy}>Create cycle</button></form></section>
+      <section className="cycle-page"><div className="cycle-grid">{cycles.map((cycle) => <button type="button" className="cycle-card" key={cycle.id} onClick={() => openCycle(cycle)}><div className="cycle-icon">◒</div><h3>{cycle.name}</h3><p>{new Date(`${cycle.starts_on}T00:00:00`).toLocaleDateString()} — {new Date(`${cycle.ends_on}T00:00:00`).toLocaleDateString()}</p><span className="cycle-card-action">Open dashboard →</span></button>)}{!cycles.length && <div className="empty-panel cycle-empty"><div className="section-icon">C</div><h3>No cycles yet</h3><p>Create a time-boxed planning window for this team.</p></div>}</div><form className="editor-card cycle-form" onSubmit={createCycle}><h2>Create a cycle</h2><p>Cycles are non-overlapping, time-boxed planning windows.</p><label>Name<input value={cycleForm.name} onChange={(e) => setCycleForm({ ...cycleForm, name: e.target.value })} required /></label><div className="two-columns"><label>Starts on<input type="date" value={cycleForm.starts_on} onChange={(e) => setCycleForm({ ...cycleForm, starts_on: e.target.value })} required /></label><label>Ends on<input type="date" value={cycleForm.ends_on} onChange={(e) => setCycleForm({ ...cycleForm, ends_on: e.target.value })} required /></label></div><button className="primary" disabled={busy}>Create cycle</button></form></section>
     );
 
     return <section className="empty-panel large-panel"><div className="section-icon">{section.slice(0, 1)}</div><h2>{section}</h2><p>This Team-scoped destination is ready for its next milestone.</p></section>;
@@ -1087,6 +1177,7 @@ function App() {
           <button className="icon-button" title="New workspace" aria-label="New workspace" onClick={() => setShowWorkspaceForm(!showWorkspaceForm)}><Icon name="plus" /></button>
         </div>
         {showWorkspaceForm && <form className="compact-form" onSubmit={createWorkspace}><input placeholder="Workspace name" value={workspaceForm.name} onChange={(e) => setWorkspaceForm({ ...workspaceForm, name: e.target.value, slug: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') })} required /><input placeholder="workspace-slug" value={workspaceForm.slug} onChange={(e) => setWorkspaceForm({ ...workspaceForm, slug: e.target.value })} required /><button className="primary" disabled={busy}>Create</button></form>}
+        <nav className="workspace-nav">{workspaceNavItems.map((item) => <button key={item.name} className={section === item.name ? 'selected' : ''} onClick={() => showSection(item.name)}><Icon name={item.icon} /><span>{item.name}</span>{item.name === 'Inbox' && inbox.unread_count > 0 && <b>{inbox.unread_count}</b>}</button>)}</nav>
         <div className="sidebar-heading"><span>Teams</span>{selectedWorkspace?.my_role !== 'member' && <button className="icon-button compact" aria-label="New team" onClick={() => setShowTeamForm(!showTeamForm)}><Icon name="plus" /></button>}</div>
         {showTeamForm && <form className="compact-form" onSubmit={createTeam}><input placeholder="Team name" value={teamForm.name} onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })} required /><input placeholder="KEY" maxLength="12" value={teamForm.issue_prefix} onChange={(e) => setTeamForm({ ...teamForm, issue_prefix: e.target.value.toUpperCase() })} required /><button className="primary" disabled={busy}>Create team</button></form>}
         <nav className="team-list">
@@ -1096,8 +1187,8 @@ function App() {
         <div className="profile"><div className="avatar">{currentUser.name.slice(0, 1).toUpperCase()}</div><div><strong>{currentUser.name}</strong><span>{currentUser.email}</span></div><button className="profile-action" title="Log out" aria-label="Log out" onClick={logout}><Icon name="logout" /></button></div>
       </aside>
       <main className="content">
-        {!selectedWorkspace ? <EmptyState title="Create your first workspace" body="A workspace contains your teams and shared product work." action={() => setShowWorkspaceForm(true)} /> : !selectedTeam ? <EmptyState title="Create your first team" body="Teams own issue keys, cycles, projects, and views." action={() => setShowTeamForm(true)} /> : <>
-          <header className="page-header"><div><div className="breadcrumbs">{selectedWorkspace.name} / {selectedTeam.name}{selectedIssue && issueRoute ? ` / ${selectedIssue.key}` : selectedProject ? ` / ${selectedProject.name}` : ''}</div><h1>{selectedIssue && issueRoute ? 'Issue detail' : selectedProject ? 'Project detail' : section}</h1></div><span className="role-chip">{selectedTeam.my_role}</span></header>
+        {!selectedWorkspace ? <EmptyState title="Create your first workspace" body="A workspace contains your teams and shared product work." action={() => setShowWorkspaceForm(true)} /> : !selectedTeam && !workspaceSections.has(section) ? <EmptyState title="Create your first team" body="Teams own issue keys, cycles, projects, and views." action={() => setShowTeamForm(true)} /> : <>
+          <header className="page-header"><div><div className="breadcrumbs">{selectedWorkspace.name}{!workspaceSections.has(section) && selectedTeam ? ` / ${selectedTeam.name}` : ''}{selectedIssue && issueRoute ? ` / ${selectedIssue.key}` : selectedProject ? ` / ${selectedProject.name}` : selectedCycle ? ` / ${selectedCycle.name}` : ''}</div><h1>{selectedIssue && issueRoute ? 'Issue detail' : selectedProject ? 'Project detail' : selectedCycle ? 'Cycle dashboard' : section}</h1></div><span className="role-chip">{workspaceSections.has(section) ? selectedWorkspace.my_role : selectedTeam?.my_role}</span></header>
           {planningContent()}
         </>}
         {status && <div className="toast"><span className="toast-dot" />{status}</div>}
@@ -1145,7 +1236,7 @@ function ObjectiveList({ title, items, onToggle }) {
 
 function SummaryDistribution({ title, rows, labelKey, valueKey = 'count', suffix = '', onSelect }) {
   const max = Math.max(1, ...rows.map((row) => row[valueKey]));
-  return <section className="summary-card distribution-card"><div className="summary-card-heading"><div><h2>{title}</h2><p>Select a row to filter the full summary.</p></div></div><div className="distribution-list">{rows.map((row, index) => <button key={`${row[labelKey]}-${index}`} onClick={() => onSelect(row)}><div><strong>{row[labelKey]}</strong><span>{row[valueKey]}{suffix}</span></div><i><span style={{ width: `${row[valueKey] / max * 100}%` }} /></i></button>)}{!rows.length && <div className="summary-empty">No matching data.</div>}</div></section>;
+  return <section className="summary-card distribution-card"><div className="summary-card-heading"><div><h2>{title}</h2><p>{onSelect ? 'Select a row to filter the full summary.' : 'Distribution within this cycle.'}</p></div></div><div className="distribution-list">{rows.map((row, index) => <button key={`${row[labelKey]}-${index}`} onClick={() => onSelect?.(row)}><div><strong>{row[labelKey]}</strong><span>{row[valueKey]}{suffix}</span></div><i><span style={{ width: `${row[valueKey] / max * 100}%` }} /></i></button>)}{!rows.length && <div className="summary-empty">No matching data.</div>}</div></section>;
 }
 
 function ActivityItem({ item, currentUser, onUpdate, onDelete }) {
