@@ -127,6 +127,8 @@ function App() {
   const [settingsTab, setSettingsTab] = useState('profile');
   const [workspaceMembers, setWorkspaceMembers] = useState([]);
   const [workspacePolicy, setWorkspacePolicy] = useState({ allow_member_invites: false, default_timezone: 'UTC', domain_policy: 'invite_only' });
+  const [invitationForm, setInvitationForm] = useState({ email: '', role: 'member', team_id: '' });
+  const [invitationUrl, setInvitationUrl] = useState('');
   const [profileDraft, setProfileDraft] = useState({ name: '' });
   const [workspaceDraft, setWorkspaceDraft] = useState({ name: '', description: '' });
   const [showIssueForm, setShowIssueForm] = useState(false);
@@ -300,6 +302,74 @@ function App() {
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
+  async function inviteWorkspaceMember(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const invitation = await request(`/api/v1/workspaces/${workspaceId}/invitations`, {
+        method: 'POST',
+        body: JSON.stringify({ ...invitationForm, team_id: invitationForm.team_id || null }),
+      });
+      const url = `${window.location.origin}/?invite=${encodeURIComponent(invitation.invite_token)}`;
+      setInvitationUrl(url);
+      setInvitationForm({ email: '', role: 'member', team_id: '' });
+      setStatus('Invitation created');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function updateWorkspaceMember(userId, role) {
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/members/${userId}`, { method: 'PUT', body: JSON.stringify({ role }) });
+      await loadSettingsData();
+      setStatus('Workspace member updated');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function removeWorkspaceMember(member) {
+    if (!window.confirm(`Remove ${member.name} from this workspace and all of its teams?`)) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/members/${member.user_id}`, { method: 'DELETE' });
+      await Promise.all([loadSettingsData(), loadPlanning(workspaceId, teamId)]);
+      setStatus('Workspace member removed');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function addTeamMember(event) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const userId = form.get('user_id');
+    if (!userId || !teamId) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/members/${userId}`, { method: 'PUT', body: JSON.stringify({ role: form.get('role') }) });
+      await loadPlanning(workspaceId, teamId);
+      formElement.reset();
+      setStatus('Team member added');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function updateTeamMember(userId, role) {
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/members/${userId}`, { method: 'PUT', body: JSON.stringify({ role }) });
+      await loadPlanning(workspaceId, teamId);
+      setStatus('Team member updated');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function removeTeamMember(member) {
+    if (!window.confirm(`Remove ${member.name} from ${selectedTeam.name}?`)) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/members/${member.user_id}`, { method: 'DELETE' });
+      await loadPlanning(workspaceId, teamId);
+      setStatus('Team member removed');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
   function applySummaryFilters(changes) {
     const next = { ...summaryFilters, ...changes };
     setSummaryFilters(next);
@@ -439,6 +509,21 @@ function App() {
   useEffect(() => {
     setProfileDraft({ name: currentUser?.name || '' });
   }, [currentUser?.id, currentUser?.name]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const url = new URL(window.location.href);
+    const token = url.searchParams.get('invite');
+    if (!token) return;
+    request('/api/v1/invitations/accept', { method: 'POST', body: JSON.stringify({ token }) })
+      .then((workspace) => {
+        url.searchParams.delete('invite');
+        window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+        setStatus(`Joined ${workspace.name}`);
+        return loadWorkspaces(workspace.id);
+      })
+      .catch((error) => setStatus(error.message));
+  }, [currentUser?.id]);
 
   useEffect(() => {
     const workspace = workspaces.find((item) => item.id === workspaceId);
@@ -1077,13 +1162,22 @@ function App() {
       <section className="inbox-page"><div className="toolbar"><div><strong>Inbox</strong><span>Mentions and activity from issues you can still access.</span></div><span className="unread-badge">{inbox.unread_count} unread</span></div><div className="inbox-list">{inbox.notifications.map((notification) => <button key={notification.id} className={notification.read_at ? 'read' : 'unread'} onClick={() => markNotificationRead(notification)}><span className="notification-dot" /><div><strong>{notification.payload?.issue_key || 'CommonPlan'} · {notification.kind.replaceAll('_', ' ')}</strong><p>{notification.kind === 'self_mention' ? 'You left yourself a reminder on this issue.' : notification.kind === 'comment' ? 'A teammate mentioned you or commented on a watched issue.' : 'Activity occurred on an issue you watch.'}</p><time>{formatDateTime(notification.created_at)}</time></div></button>)}{!inbox.notifications.length && <div className="empty-panel">Your inbox is clear.</div>}</div></section>
     );
 
-    if (section === 'Settings') return (
+    if (section === 'Settings') {
+      const canManageWorkspace = ['owner', 'admin'].includes(selectedWorkspace.my_role);
+      const canManageTeam = canManageWorkspace || selectedTeam?.my_role === 'lead';
+      const workspaceOwnerCount = workspaceMembers.filter((member) => member.role === 'owner' && member.status === 'active').length;
+      const teamMemberIds = new Set(members.map((member) => member.user_id));
+      const teamCandidates = workspaceMembers.filter((member) => member.status === 'active' && !teamMemberIds.has(member.user_id));
+      return (
       <section className="workspace-settings-page">
         <div className="settings-title"><div><span className="eyebrow">SETTINGS</span><h2>{settingsTab === 'profile' ? 'Your profile' : settingsTab === 'workspace' ? 'Workspace profile' : settingsTab === 'members' ? 'Members' : 'Applications'}</h2><p>Personal settings belong to you; workspace settings apply to everyone in {selectedWorkspace.name}.</p></div></div>
         <div className="settings-layout"><nav className="settings-nav"><span>Personal</span><button className={settingsTab === 'profile' ? 'selected' : ''} onClick={() => setSettingsTab('profile')}>Profile</button><button disabled title="Managed by the Auth Service">Security & access</button><button disabled title="Managed by the Auth Service">Connected accounts</button><span>Workspace</span><button className={settingsTab === 'workspace' ? 'selected' : ''} onClick={() => setSettingsTab('workspace')}>General</button><button className={settingsTab === 'members' ? 'selected' : ''} onClick={() => setSettingsTab('members')}>Members</button><button className={settingsTab === 'applications' ? 'selected' : ''} onClick={() => setSettingsTab('applications')}>Applications</button></nav><div className="settings-content">
         {settingsTab === 'profile' && <form className="settings-card" onSubmit={saveProfile}><h3>Profile</h3><p>This information follows your account across workspaces.</p><label>Display name<input value={profileDraft.name} onChange={(event) => setProfileDraft({ name: event.target.value })} required /></label><label>Email<input value={currentUser.email} disabled /></label><div className="form-actions"><button className="primary" disabled={busy}>Save profile</button></div></form>}
         {settingsTab === 'workspace' && <form className="settings-card" onSubmit={saveWorkspace}><h3>Workspace profile</h3><p>Only workspace owners and admins can change shared details and access policy.</p><label>Name<input value={workspaceDraft.name} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, name: event.target.value })} required /></label><label>Description<textarea value={workspaceDraft.description} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, description: event.target.value })} /></label><label>Default timezone<input value={workspacePolicy.default_timezone} onChange={(event) => setWorkspacePolicy({ ...workspacePolicy, default_timezone: event.target.value })} placeholder="UTC" /></label><label>Domain policy<select value={workspacePolicy.domain_policy} onChange={(event) => setWorkspacePolicy({ ...workspacePolicy, domain_policy: event.target.value })}><option value="invite_only">Invite only</option><option value="verified_domains">Verified domains</option></select></label><label className="settings-checkbox"><input type="checkbox" checked={workspacePolicy.allow_member_invites} onChange={(event) => setWorkspacePolicy({ ...workspacePolicy, allow_member_invites: event.target.checked })} />Allow members to invite teammates</label><div className="form-actions"><button className="primary" disabled={busy || selectedWorkspace.my_role === 'member'}>Save workspace</button></div></form>}
-        {settingsTab === 'members' && <article className="settings-card"><h3>Workspace members</h3><p>Membership is workspace-wide. Team membership only controls access to an individual team.</p><div className="member-settings-list">{workspaceMembers.map((member) => <div key={member.user_id}><span className="avatar small-avatar">{member.name.slice(0, 1).toUpperCase()}</span><div><strong>{member.name}</strong><small>{member.email}</small></div><span className="role-chip">{member.role}</span></div>)}</div></article>}
+        {settingsTab === 'members' && <div className="member-admin-stack">
+          <article className="settings-card"><div className="settings-card-heading"><div><h3>Workspace members</h3><p>Removing a workspace member also removes every Team membership.</p></div><span className="count-badge">{workspaceMembers.length}</span></div>{canManageWorkspace && <form className="member-invite-form" onSubmit={inviteWorkspaceMember}><label>Email<input type="email" value={invitationForm.email} onChange={(event) => setInvitationForm({ ...invitationForm, email: event.target.value })} placeholder="teammate@example.com" required /></label><label>Workspace role<select value={invitationForm.role} onChange={(event) => setInvitationForm({ ...invitationForm, role: event.target.value })}><option value="member">Member</option><option value="admin">Admin</option></select></label><label>Also add to Team<select value={invitationForm.team_id} onChange={(event) => setInvitationForm({ ...invitationForm, team_id: event.target.value })}><option value="">No Team</option>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label><button className="primary" disabled={busy}>Create invite</button></form>}{invitationUrl && <div className="invitation-result"><div><strong>Invitation link</strong><small>It is email-bound and expires in seven days.</small></div><code>{invitationUrl}</code><button className="secondary" onClick={() => navigator.clipboard.writeText(invitationUrl)}>Copy</button></div>}<div className="member-settings-list">{workspaceMembers.map((member) => { const lastOwner = member.role === 'owner' && workspaceOwnerCount === 1; return <div key={member.user_id}><span className="avatar small-avatar">{member.name.slice(0, 1).toUpperCase()}</span><div><strong>{member.name}{member.user_id === currentUser.id ? ' (You)' : ''}</strong><small>{member.email}</small></div>{canManageWorkspace ? <><select aria-label={`Workspace role for ${member.name}`} value={member.role} disabled={busy || lastOwner} onChange={(event) => updateWorkspaceMember(member.user_id, event.target.value)}><option value="member">Member</option><option value="admin">Admin</option><option value="owner">Owner</option></select><button className="danger-text" disabled={busy || lastOwner} title={lastOwner ? 'A workspace must keep an owner' : ''} onClick={() => removeWorkspaceMember(member)}>Remove</button></> : <span className="role-chip">{member.role}</span>}</div>; })}</div></article>
+          <article className="settings-card"><div className="settings-card-heading"><div><h3>Team members</h3><p>A Team member must already belong to this workspace.</p></div>{teams.length > 0 && <select value={teamId} onChange={(event) => setTeamId(event.target.value)}>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select>}</div>{selectedTeam ? <>{canManageTeam && <form className="team-member-add" onSubmit={addTeamMember}><label>Workspace member<select name="user_id" defaultValue="" required><option value="" disabled>Select a member</option>{teamCandidates.map((member) => <option key={member.user_id} value={member.user_id}>{member.name} · {member.email}</option>)}</select></label><label>Team role<select name="role" defaultValue="member"><option value="member">Member</option><option value="lead">Lead</option></select></label><button className="primary" disabled={busy || !teamCandidates.length}>Add to Team</button></form>}<div className="member-settings-list">{members.map((member) => <div key={member.user_id}><span className="avatar small-avatar">{member.name.slice(0, 1).toUpperCase()}</span><div><strong>{member.name}{member.user_id === currentUser.id ? ' (You)' : ''}</strong><small>{member.email}</small></div>{canManageTeam ? <><select aria-label={`Team role for ${member.name}`} value={member.role} disabled={busy} onChange={(event) => updateTeamMember(member.user_id, event.target.value)}><option value="member">Member</option><option value="lead">Lead</option></select><button className="danger-text" disabled={busy} onClick={() => removeTeamMember(member)}>Remove</button></> : <span className="role-chip">{member.role}</span>}</div>)}</div></> : <div className="inline-empty">Create a Team before assigning Team members.</div>}</article>
+        </div>}
         {settingsTab === 'applications' && <article className="integration-card">
           <header><div className="github-mark">GH</div><div><h3>GitHub</h3><p>Automatically link pull requests to CommonPlan issues by item key.</p></div>{githubHealthLoading ? <span className="integration-status checking">Checking…</span> : <span className={`integration-status ${githubHealth?.configured ? 'connected' : 'setup'}`}>{githubHealth?.configured ? 'Connected' : 'Setup required'}</span>}</header>
           {githubHealth?.forbidden ? <div className="integration-permission"><strong>Workspace admin access required</strong><p>{githubHealth.message}</p></div> : <>
@@ -1095,7 +1189,8 @@ function App() {
         </article>}
         </div></div>
       </section>
-    );
+      );
+    }
 
     if (section === 'Projects' && selectedProject) {
       const objectives = selectedProject.objectives.filter((item) => item.kind === 'objective');

@@ -467,10 +467,20 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .settings-card { display: grid; gap: 14px; padding: 22px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: white; box-shadow: var(--shadow-panel); }
 .settings-card h3, .settings-card p { margin: 0; }
 .settings-card p { color: var(--muted); font-size: 9px; }
+.settings-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.settings-card-heading > div { display: grid; gap: 4px; }
+.member-admin-stack { display: grid; gap: 14px; }
+.member-invite-form { display: grid; grid-template-columns: minmax(180px, 1.5fr) 130px 150px auto; gap: 8px; align-items: end; padding: 14px; border: 1px solid #e6e5f3; border-radius: 9px; background: #fafaff; }
+.team-member-add { display: grid; grid-template-columns: minmax(220px, 1fr) 130px auto; gap: 8px; align-items: end; padding: 14px; border: 1px solid #e6e5f3; border-radius: 9px; background: #fafaff; }
+.invitation-result { display: grid; grid-template-columns: minmax(130px, auto) minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 11px 13px; border: 1px solid #d9e9df; border-radius: 8px; background: #f5fbf7; }
+.invitation-result > div { display: grid; gap: 2px; }
+.invitation-result small { color: var(--muted); font-size: 8px; }
+.invitation-result code { overflow: hidden; color: #526159; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .member-settings-list { display: grid; }
-.member-settings-list > div { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.member-settings-list > div { display: grid; grid-template-columns: auto minmax(0, 1fr) 120px auto; gap: 10px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
 .member-settings-list > div > div { display: grid; gap: 2px; }
 .member-settings-list small { color: var(--muted); font-size: 8px; }
+.member-settings-list .danger-text:disabled { opacity: .35; cursor: not-allowed; }
 .settings-title { padding: 4px 2px 8px; }
 .settings-title h2 { margin: 5px 0 4px; color: #30313a; font-size: 23px; letter-spacing: -.035em; }
 .settings-title p { margin: 0; color: #858792; font-size: 10px; }
@@ -618,6 +628,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
   .settings-layout { grid-template-columns: 1fr; }
   .settings-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .settings-nav span { grid-column: 1 / -1; }
+  .member-invite-form, .team-member-add { grid-template-columns: 1fr 1fr; }
+  .member-invite-form .primary, .team-member-add .primary { grid-column: 1 / -1; }
   .summary-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .summary-progress-grid, .summary-bottom-grid { grid-template-columns: 1fr; }
 }
@@ -652,6 +664,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
   .save-view-trigger { padding-inline: 8px; }
   .saved-view-fields { grid-template-columns: 1fr; }
   .saved-view-fields .primary { grid-column: 1; width: 100%; }
+  .member-invite-form, .team-member-add, .invitation-result { grid-template-columns: 1fr; }
+  .member-settings-list > div { grid-template-columns: auto minmax(0, 1fr); }
+  .member-settings-list > div > select, .member-settings-list > div > .danger-text, .member-settings-list > div > .role-chip { grid-column: 2; }
   .attention-column { border-right: 0; border-bottom: 1px solid var(--line); }
   .objective-list + .objective-list { border-top: 1px solid var(--line); border-left: 0; }
   .inline-create-form { grid-template-columns: 1fr; }
