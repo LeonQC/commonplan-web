@@ -110,6 +110,7 @@ function App() {
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [issueRoute, setIssueRoute] = useState(() => parseIssueRoute());
   const [issueActivity, setIssueActivity] = useState([]);
+  const [issuePullRequests, setIssuePullRequests] = useState([]);
   const [issueCollaboration, setIssueCollaboration] = useState({ watching: false, watchers: [], sub_issues: [] });
   const [issueDraft, setIssueDraft] = useState({ title: '', description: '' });
   const [commentBody, setCommentBody] = useState('');
@@ -118,6 +119,8 @@ function App() {
   const commentInputRef = useRef(null);
   const [subIssueTitle, setSubIssueTitle] = useState('');
   const [issueLoading, setIssueLoading] = useState(false);
+  const [githubHealth, setGitHubHealth] = useState(null);
+  const [githubHealthLoading, setGitHubHealthLoading] = useState(false);
   const [showIssueForm, setShowIssueForm] = useState(false);
   const [issueForm, setIssueForm] = useState({ title: '', description: '', priority: 0, workflow_state_id: '', cycle_id: '', project_id: '', milestone_id: '', assignee_user_id: '', due_date: '', label_ids: [] });
   const [cycleForm, setCycleForm] = useState({ name: '', starts_on: '', ends_on: '' });
@@ -232,6 +235,17 @@ function App() {
     setMyIssues(await request(`/api/v1/me/issues?workspace_id=${workspaceId}`));
   }
 
+  async function loadGitHubHealth() {
+    setGitHubHealthLoading(true);
+    try {
+      setGitHubHealth(await request(`/api/v1/workspaces/${workspaceId}/integrations/github`));
+    } catch (error) {
+      setGitHubHealth({ forbidden: true, message: error.message });
+    } finally {
+      setGitHubHealthLoading(false);
+    }
+  }
+
   function applySummaryFilters(changes) {
     const next = { ...summaryFilters, ...changes };
     setSummaryFilters(next);
@@ -249,15 +263,17 @@ function App() {
     if (!selectedWorkspaceId || !key) return;
     setIssueLoading(true);
     try {
-      const [issue, activity, collaboration] = await Promise.all([
+      const [issue, activity, collaboration, pullRequests] = await Promise.all([
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}`),
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/activity`),
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/collaboration`),
+        request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/pull-requests`).catch(() => []),
       ]);
       setSelectedIssue(issue);
       setIssueDraft({ title: issue.title, description: issue.description || '' });
       setIssueActivity(activity);
       setIssueCollaboration(collaboration);
+      setIssuePullRequests(pullRequests);
       setSection('Issues');
       if (issue.team_id !== teamId) setTeamId(issue.team_id);
     } finally {
@@ -276,6 +292,7 @@ function App() {
     setSelectedIssue(null);
     setIssueDraft({ title: '', description: '' });
     setIssueActivity([]);
+    setIssuePullRequests([]);
     setIssueCollaboration({ watching: false, watchers: [], sub_issues: [] });
     setIssueLoading(true);
     setSection('Issues');
@@ -286,6 +303,7 @@ function App() {
     setIssueRoute(null);
     setSelectedIssue(null);
     setIssueActivity([]);
+    setIssuePullRequests([]);
     setIssueCollaboration({ watching: false, watchers: [], sub_issues: [] });
     setIssueLoading(false);
   }
@@ -357,6 +375,7 @@ function App() {
     if (section === 'Views') loadViews().catch((error) => setStatus(error.message));
     if (section === 'Inbox') loadInbox().catch((error) => setStatus(error.message));
     if (section === 'My Issues') loadMyIssues().catch((error) => setStatus(error.message));
+    if (section === 'Settings') loadGitHubHealth();
   }, [currentUser, workspaceId, section]);
 
   useEffect(() => {
@@ -386,6 +405,7 @@ function App() {
       if (!route) {
         setSelectedIssue(null);
         setIssueActivity([]);
+        setIssuePullRequests([]);
       }
       if (!route && !nextSummaryRoute) setSection('Overview');
     };
@@ -903,6 +923,11 @@ function App() {
                 <div className="copy-actions"><span>Created {formatDateTime(selectedIssue.created_at)}</span><button className="secondary" disabled={busy || !issueDraft.title.trim()}>Save description</button></div>
               </form>
 
+              <section className="development-card">
+                <div className="development-heading"><div><span className="eyebrow">DEVELOPMENT</span><h2>Pull requests</h2><p>GitHub PRs link automatically when their title contains <strong>{selectedIssue.key}</strong>.</p></div><span>{issuePullRequests.length}</span></div>
+                <div className="pull-request-list">{issuePullRequests.map((pullRequest) => <a key={pullRequest.id} href={pullRequest.html_url} target="_blank" rel="noreferrer"><span className={`pr-state ${pullRequest.state}`}>{pullRequest.is_draft ? 'draft' : pullRequest.state}</span><div><strong>{pullRequest.title}</strong><small>{pullRequest.github_repo_full_name} #{pullRequest.pr_number}</small></div><span className="external-arrow">↗</span></a>)}{!issuePullRequests.length && <div className="development-empty"><span>↗</span><div><strong>No linked pull requests</strong><p>Add {selectedIssue.key} to a PR title. No repository mapping is required.</p></div></div>}</div>
+              </section>
+
               <section className="activity-card">
                 <div className="activity-heading"><div><h2>Activity</h2><p>Comments and changes are recorded chronologically.</p></div><span>{issueActivity.filter((item) => item.event_type !== 'comment.created').length}</span></div>
                 <form className="comment-composer" onSubmit={addComment}>
@@ -980,6 +1005,21 @@ function App() {
 
     if (section === 'Inbox') return (
       <section className="inbox-page"><div className="toolbar"><div><strong>Inbox</strong><span>Mentions and activity from issues you can still access.</span></div><span className="unread-badge">{inbox.unread_count} unread</span></div><div className="inbox-list">{inbox.notifications.map((notification) => <button key={notification.id} className={notification.read_at ? 'read' : 'unread'} onClick={() => markNotificationRead(notification)}><span className="notification-dot" /><div><strong>{notification.payload?.issue_key || 'CommonPlan'} · {notification.kind.replaceAll('_', ' ')}</strong><p>{notification.kind === 'self_mention' ? 'You left yourself a reminder on this issue.' : notification.kind === 'comment' ? 'A teammate mentioned you or commented on a watched issue.' : 'Activity occurred on an issue you watch.'}</p><time>{formatDateTime(notification.created_at)}</time></div></button>)}{!inbox.notifications.length && <div className="empty-panel">Your inbox is clear.</div>}</div></section>
+    );
+
+    if (section === 'Settings') return (
+      <section className="workspace-settings-page">
+        <div className="settings-title"><div><span className="eyebrow">WORKSPACE SETTINGS</span><h2>Applications</h2><p>Manage services connected to {selectedWorkspace.name}.</p></div></div>
+        <article className="integration-card">
+          <header><div className="github-mark">GH</div><div><h3>GitHub</h3><p>Automatically link pull requests to CommonPlan issues by item key.</p></div>{githubHealthLoading ? <span className="integration-status checking">Checking…</span> : <span className={`integration-status ${githubHealth?.configured ? 'connected' : 'setup'}`}>{githubHealth?.configured ? 'Connected' : 'Setup required'}</span>}</header>
+          {githubHealth?.forbidden ? <div className="integration-permission"><strong>Workspace admin access required</strong><p>{githubHealth.message}</p></div> : <>
+            <div className="integration-facts"><div><span>GitHub owner</span><strong>{githubHealth?.owner_login || 'Not configured'}</strong></div><div><span>Subscribed event</span><strong>Pull requests</strong></div><div><span>Last delivery</span><strong>{githubHealth?.last_delivery ? formatDateTime(githubHealth.last_delivery.received_at) : 'No delivery yet'}</strong></div><div><span>Last result</span><strong className={githubHealth?.last_delivery?.status || ''}>{githubHealth?.last_delivery?.status || 'Waiting'}</strong></div></div>
+            <div className="integration-rule"><span>LINKING RULE</span><p>A PR title such as <code>{selectedTeam.issue_prefix}-12 Improve saved views</code> links to that issue. Repository-to-project mapping is intentionally not used.</p></div>
+            <div className="webhook-setup"><div><h4>Local webhook setup</h4><p>GitHub cannot send directly to localhost. Use a public forwarding URL during development and keep its forwarding daemon running.</p></div><ol><li>Create a smee.io channel and use its HTTPS URL as GitHub’s payload URL.</li><li>Choose <strong>application/json</strong>, add a high-entropy secret, and select only <strong>Pull requests</strong>.</li><li>Run <code>smee --url YOUR_SMEE_URL --target {API_BASE_URL}/webhooks/github</code>.</li><li>Put the same secret and allowed owner/workspace IDs in the API environment, restart, then redeliver GitHub’s ping.</li></ol><div className="webhook-endpoint"><span>Local target</span><code>{API_BASE_URL}/webhooks/github</code></div></div>
+          </>}
+          <footer><a href="https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/testing-webhooks" target="_blank" rel="noreferrer">GitHub local testing guide ↗</a><button className="secondary" onClick={loadGitHubHealth} disabled={githubHealthLoading}>Refresh status</button></footer>
+        </article>
+      </section>
     );
 
     if (section === 'Projects' && selectedProject) {
