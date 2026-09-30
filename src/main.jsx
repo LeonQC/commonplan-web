@@ -114,6 +114,10 @@ function App() {
   const [issueActivity, setIssueActivity] = useState([]);
   const [issuePullRequests, setIssuePullRequests] = useState([]);
   const [issueCollaboration, setIssueCollaboration] = useState({ watching: false, watchers: [], sub_issues: [] });
+  const [relationTypes, setRelationTypes] = useState([]);
+  const [issueRelations, setIssueRelations] = useState([]);
+  const [relationForm, setRelationForm] = useState({ relation_type_id: '', target_issue_key: '' });
+  const [relationTypeForm, setRelationTypeForm] = useState({ key: '', forward_label: '', inverse_label: '', category: 'custom', symmetric: false, allow_cycles: true });
   const [issueDraft, setIssueDraft] = useState({ title: '', description: '' });
   const [commentBody, setCommentBody] = useState('');
   const [commentMentions, setCommentMentions] = useState([]);
@@ -186,7 +190,7 @@ function App() {
   async function loadPlanning(selectedWorkspaceId, selectedTeamId) {
     if (!selectedWorkspaceId || !selectedTeamId) return;
     const base = `/api/v1/workspaces/${selectedWorkspaceId}/teams/${selectedTeamId}`;
-    const [nextOverview, nextStates, nextCycles, nextCycleSettings, nextLabels, nextIssues, nextMembers, nextProjects] = await Promise.all([
+    const [nextOverview, nextStates, nextCycles, nextCycleSettings, nextLabels, nextIssues, nextMembers, nextProjects, nextRelationTypes] = await Promise.all([
       request(`${base}/overview`),
       request(`${base}/workflow-states`),
       request(`${base}/cycles`),
@@ -195,6 +199,7 @@ function App() {
       request(`${base}/issues`),
       request(`${base}/members`),
       request(`${base}/projects`),
+      request(`/api/v1/workspaces/${selectedWorkspaceId}/relation-types`),
     ]);
     setOverview(nextOverview);
     setWorkflowStates(nextStates);
@@ -204,6 +209,8 @@ function App() {
     setIssues(nextIssues);
     setMembers(nextMembers);
     setProjects(nextProjects);
+    setRelationTypes(nextRelationTypes);
+    setRelationForm((form) => ({ ...form, relation_type_id: form.relation_type_id || nextRelationTypes[0]?.id || '' }));
     if (selectedCycle) {
       const refreshedCycle = nextCycles.find((cycle) => cycle.id === selectedCycle.id);
       if (refreshedCycle) setSelectedCycle(refreshedCycle);
@@ -266,12 +273,14 @@ function App() {
   }
 
   async function loadSettingsData() {
-    const [rows, policy] = await Promise.all([
+    const [rows, policy, types] = await Promise.all([
       request(`/api/v1/workspaces/${workspaceId}/members`),
       request(`/api/v1/workspaces/${workspaceId}/settings`),
+      request(`/api/v1/workspaces/${workspaceId}/relation-types`),
     ]);
     setWorkspaceMembers(rows);
     setWorkspacePolicy(policy);
+    setRelationTypes(types);
   }
 
   async function saveProfile(event) {
@@ -382,17 +391,19 @@ function App() {
     if (!selectedWorkspaceId || !key) return;
     setIssueLoading(true);
     try {
-      const [issue, activity, collaboration, pullRequests] = await Promise.all([
+      const [issue, activity, collaboration, pullRequests, relations] = await Promise.all([
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}`),
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/activity`),
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/collaboration`),
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/pull-requests`).catch(() => []),
+        request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/relations`),
       ]);
       setSelectedIssue(issue);
       setIssueDraft({ title: issue.title, description: issue.description || '' });
       setIssueActivity(activity);
       setIssueCollaboration(collaboration);
       setIssuePullRequests(pullRequests);
+      setIssueRelations(relations);
       setSection('Issues');
       if (issue.team_id !== teamId) setTeamId(issue.team_id);
     } finally {
@@ -413,6 +424,8 @@ function App() {
     setIssueActivity([]);
     setIssuePullRequests([]);
     setIssueCollaboration({ watching: false, watchers: [], sub_issues: [] });
+    setIssueRelations([]);
+    setRelationForm((form) => ({ ...form, target_issue_key: '' }));
     setIssueLoading(true);
     setSection('Issues');
   }
@@ -424,6 +437,7 @@ function App() {
     setIssueActivity([]);
     setIssuePullRequests([]);
     setIssueCollaboration({ watching: false, watchers: [], sub_issues: [] });
+    setIssueRelations([]);
     setIssueLoading(false);
   }
 
@@ -938,8 +952,43 @@ function App() {
     try {
       const created = await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/sub-issues`, { method: 'POST', body: JSON.stringify({ title: subIssueTitle, label_ids: [] }) });
       setSubIssueTitle('');
-      setIssueCollaboration(await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/collaboration`));
+      await Promise.all([
+        loadPlanning(workspaceId, teamId),
+        request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/collaboration`).then(setIssueCollaboration),
+      ]);
       setStatus(`Created ${created.key}`);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function createIssueRelation(event) {
+    event.preventDefault();
+    if (!relationForm.relation_type_id || !relationForm.target_issue_key) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/relations`, { method: 'POST', body: JSON.stringify(relationForm) });
+      setIssueRelations(await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/relations`));
+      setRelationForm((form) => ({ ...form, target_issue_key: '' }));
+      setStatus('Issue relation added');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function deleteIssueRelation(relationId) {
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/relations/${relationId}`, { method: 'DELETE' });
+      setIssueRelations((rows) => rows.filter((row) => row.id !== relationId));
+      setStatus('Issue relation removed');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function createRelationType(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const created = await request(`/api/v1/workspaces/${workspaceId}/relation-types`, { method: 'POST', body: JSON.stringify(relationTypeForm) });
+      setRelationTypes((rows) => [...rows, created]);
+      setRelationTypeForm({ key: '', forward_label: '', inverse_label: '', category: 'custom', symmetric: false, allow_cycles: true });
+      setStatus('Relationship type created');
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
@@ -1149,6 +1198,7 @@ function App() {
                 <div className="collaboration-heading"><div><h2>Collaboration</h2><span>{issueCollaboration.watchers.length} watching</span></div><button className={issueCollaboration.watching ? 'watching' : ''} onClick={toggleWatch} disabled={busy}>{issueCollaboration.watching ? 'Watching' : 'Watch'}</button></div>
                 <div className="watcher-row">{issueCollaboration.watchers.map((watcher) => <span key={watcher.user_id} title={`${watcher.name} · ${watcher.reason}`}>{watcher.name.slice(0, 1).toUpperCase()}</span>)}{!issueCollaboration.watchers.length && <small>No watchers yet.</small>}</div>
                 <div className="sub-issues"><h3>Sub-issues <span>{issueCollaboration.sub_issues.length}</span></h3>{issueCollaboration.sub_issues.map((issue) => <button key={issue.id} onClick={() => openIssue(issue)}><span>{issue.key}</span><strong>{issue.title}</strong></button>)}<form onSubmit={createSubIssue}><input placeholder="Add a sub-issue…" value={subIssueTitle} onChange={(event) => setSubIssueTitle(event.target.value)} /><button disabled={busy || !subIssueTitle.trim()}>+</button></form></div>
+                <div className="issue-relations"><div className="relation-heading"><h3>Relationships <span>{issueRelations.length}</span></h3><small>Dependencies and contextual links</small></div><div className="relation-list">{issueRelations.map((relation) => <div key={relation.id}><span>{relation.label}</span><button type="button" onClick={() => openIssue(relation.related_issue)}><strong>{relation.related_issue.key}</strong>{relation.related_issue.title}</button><button type="button" className="relation-remove" aria-label={`Remove relation to ${relation.related_issue.key}`} onClick={() => deleteIssueRelation(relation.id)} disabled={busy}>×</button></div>)}{!issueRelations.length && <p>No relationships yet.</p>}</div><form className="relation-form" onSubmit={createIssueRelation}><ChoicePicker label="Relationship" value={relationForm.relation_type_id} options={relationTypes.map((type) => ({ value: type.id, label: type.forward_label }))} onChange={(value) => setRelationForm({ ...relationForm, relation_type_id: value })} disabled={busy} /><label>Issue key<input list="relation-issue-options" placeholder="e.g. CORE-12" value={relationForm.target_issue_key} onChange={(event) => setRelationForm({ ...relationForm, target_issue_key: event.target.value.toUpperCase() })} /></label><datalist id="relation-issue-options">{issues.filter((issue) => issue.id !== selectedIssue.id).map((issue) => <option key={issue.id} value={issue.key}>{issue.title}</option>)}</datalist><button className="secondary" disabled={busy || !relationForm.relation_type_id || !relationForm.target_issue_key}>Add relationship</button></form></div>
               </section>
               <div className="properties-heading"><h2>Properties</h2><span>Changes save immediately</span></div>
               <ChoicePicker label="Status" value={selectedIssue.workflow_state_id} options={workflowStates.map((state) => ({ value: state.id, label: state.name }))} onChange={(value) => updateIssue({ workflow_state_id: value })} disabled={busy} />
@@ -1170,7 +1220,7 @@ function App() {
       <section className="planning-list-page">
         <div className="toolbar"><div><strong>{issues.length} issues</strong><span>Plan and track team work</span></div><button className="primary" onClick={() => setShowIssueForm(!showIssueForm)}>+ New issue</button></div>
         {showIssueForm && <form className="editor-card" onSubmit={createIssue}><div className="form-grid"><label className="wide">Title<input autoFocus value={issueForm.title} onChange={(e) => setIssueForm({ ...issueForm, title: e.target.value })} required /></label><label className="wide">Description<textarea value={issueForm.description} onChange={(e) => setIssueForm({ ...issueForm, description: e.target.value })} /></label><label>Status<select value={issueForm.workflow_state_id} onChange={(e) => setIssueForm({ ...issueForm, workflow_state_id: e.target.value })}><option value="">Default</option>{workflowStates.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label><label>Priority<select value={issueForm.priority} onChange={(e) => setIssueForm({ ...issueForm, priority: e.target.value })}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label><label>Cycle<select value={issueForm.cycle_id} onChange={(e) => setIssueForm({ ...issueForm, cycle_id: e.target.value })}><option value="">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label><label>Project<select value={issueForm.project_id} onChange={(e) => setIssueForm({ ...issueForm, project_id: e.target.value, milestone_id: '' })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label>Milestone<select value={issueForm.milestone_id} onChange={(e) => setIssueForm({ ...issueForm, milestone_id: e.target.value })} disabled={!issueForm.project_id}><option value="">No milestone</option>{projects.find((project) => project.id === issueForm.project_id)?.milestones.map((milestone) => <option key={milestone.id} value={milestone.id}>{milestone.name}</option>)}</select></label><label>Assignee<select value={issueForm.assignee_user_id} onChange={(e) => setIssueForm({ ...issueForm, assignee_user_id: e.target.value })}><option value="">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label><label>Due date<input type="date" value={issueForm.due_date} onChange={(e) => setIssueForm({ ...issueForm, due_date: e.target.value })} /></label><label className="wide">Labels<select multiple value={issueForm.label_ids} onChange={(e) => setIssueForm({ ...issueForm, label_ids: [...e.target.selectedOptions].map((option) => option.value) })}>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select></label></div><div className="form-actions"><button type="button" className="secondary" onClick={() => setShowIssueForm(false)}>Cancel</button><button className="primary" disabled={busy}>Create issue</button></div></form>}
-        <div className="issue-board">{workflowStates.map((state) => <div className="state-group" key={state.id}><div className="state-heading"><StateBadge name={state.name} /><span>{issues.filter((issue) => issue.workflow_state_id === state.id).length}</span></div>{issues.filter((issue) => issue.workflow_state_id === state.id).map((issue) => <button key={issue.id} className="issue-row" onClick={() => openIssue(issue)}><span className="priority-dot" data-priority={issue.priority} /><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><span className="row-meta">{issue.labels.map((label) => label.name).join(', ')}</span></button>)}</div>)}</div>
+        <div className="issue-board">{workflowStates.map((state) => <div className="state-group" key={state.id}><div className="state-heading"><StateBadge name={state.name} /><span>{issues.filter((issue) => issue.workflow_state_id === state.id).length}</span></div>{issues.filter((issue) => issue.workflow_state_id === state.id).map((issue) => <IssueListRow key={issue.id} issue={issue} issues={issues} workflowStates={workflowStates} onOpen={openIssue} />)}</div>)}</div>
         <div className="settings-grid"><form className="mini-card" onSubmit={createLabel}><h3>Create label</h3><div className="inline-fields"><input placeholder="Label name" value={labelForm.name} onChange={(e) => setLabelForm({ ...labelForm, name: e.target.value })} required /><input className="color-input" type="color" value={labelForm.color} onChange={(e) => setLabelForm({ ...labelForm, color: e.target.value })} /><button className="secondary">Add</button></div></form><div className="mini-card"><h3>Team labels</h3><div className="label-row">{labels.map((label) => <span className="label-pill" key={label.id} style={{ '--label-color': label.color }}>{label.name}</span>)}{!labels.length && <span className="muted">No labels</span>}</div></div></div>
       </section>
     );
@@ -1214,11 +1264,12 @@ function App() {
       const workspaceOwnerCount = workspaceMembers.filter((member) => member.role === 'owner' && member.status === 'active').length;
       return (
       <section className="workspace-settings-page">
-        <div className="settings-title"><div><span className="eyebrow">SETTINGS</span><h2>{settingsTab === 'profile' ? 'Your profile' : settingsTab === 'workspace' ? 'Workspace profile' : settingsTab === 'members' ? 'Members' : 'Applications'}</h2><p>Personal settings belong to you; workspace settings apply to everyone in {selectedWorkspace.name}.</p></div></div>
-        <div className="settings-layout"><nav className="settings-nav"><span>Personal</span><button className={settingsTab === 'profile' ? 'selected' : ''} onClick={() => setSettingsTab('profile')}>Profile</button><button disabled title="Managed by the Auth Service">Security & access</button><button disabled title="Managed by the Auth Service">Connected accounts</button><span>Workspace</span><button className={settingsTab === 'workspace' ? 'selected' : ''} onClick={() => setSettingsTab('workspace')}>General</button><button className={settingsTab === 'members' ? 'selected' : ''} onClick={() => setSettingsTab('members')}>Members</button><button className={settingsTab === 'applications' ? 'selected' : ''} onClick={() => setSettingsTab('applications')}>Applications</button></nav><div className="settings-content">
+        <div className="settings-title"><div><span className="eyebrow">SETTINGS</span><h2>{settingsTab === 'profile' ? 'Your profile' : settingsTab === 'workspace' ? 'Workspace profile' : settingsTab === 'members' ? 'Members' : settingsTab === 'relations' ? 'Issue relationships' : 'Applications'}</h2><p>Personal settings belong to you; workspace settings apply to everyone in {selectedWorkspace.name}.</p></div></div>
+        <div className="settings-layout"><nav className="settings-nav"><span>Personal</span><button className={settingsTab === 'profile' ? 'selected' : ''} onClick={() => setSettingsTab('profile')}>Profile</button><button disabled title="Managed by the Auth Service">Security & access</button><button disabled title="Managed by the Auth Service">Connected accounts</button><span>Workspace</span><button className={settingsTab === 'workspace' ? 'selected' : ''} onClick={() => setSettingsTab('workspace')}>General</button><button className={settingsTab === 'members' ? 'selected' : ''} onClick={() => setSettingsTab('members')}>Members</button><button className={settingsTab === 'relations' ? 'selected' : ''} onClick={() => setSettingsTab('relations')}>Issue relationships</button><button className={settingsTab === 'applications' ? 'selected' : ''} onClick={() => setSettingsTab('applications')}>Applications</button></nav><div className="settings-content">
         {settingsTab === 'profile' && <form className="settings-card" onSubmit={saveProfile}><h3>Profile</h3><p>This information follows your account across workspaces.</p><label>Display name<input value={profileDraft.name} onChange={(event) => setProfileDraft({ name: event.target.value })} required /></label><label>Email<input value={currentUser.email} disabled /></label><div className="form-actions"><button className="primary" disabled={busy}>Save profile</button></div></form>}
         {settingsTab === 'workspace' && <form className="settings-card" onSubmit={saveWorkspace}><h3>Workspace profile</h3><p>Only workspace owners and admins can change shared details and access policy.</p><label>Name<input value={workspaceDraft.name} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, name: event.target.value })} required /></label><label>Description<textarea value={workspaceDraft.description} onChange={(event) => setWorkspaceDraft({ ...workspaceDraft, description: event.target.value })} /></label><label>Default timezone<input value={workspacePolicy.default_timezone} onChange={(event) => setWorkspacePolicy({ ...workspacePolicy, default_timezone: event.target.value })} placeholder="UTC" /></label><label>Domain policy<select value={workspacePolicy.domain_policy} onChange={(event) => setWorkspacePolicy({ ...workspacePolicy, domain_policy: event.target.value })}><option value="invite_only">Invite only</option><option value="verified_domains">Verified domains</option></select></label><label className="settings-checkbox"><input type="checkbox" checked={workspacePolicy.allow_member_invites} onChange={(event) => setWorkspacePolicy({ ...workspacePolicy, allow_member_invites: event.target.checked })} />Allow members to invite teammates</label><div className="form-actions"><button className="primary" disabled={busy || selectedWorkspace.my_role === 'member'}>Save workspace</button></div></form>}
         {settingsTab === 'members' && <article className="settings-card"><div className="settings-card-heading"><div><h3>Workspace members</h3><p>Workspace membership is managed here. Removing a member also removes their Team memberships.</p></div><span className="count-badge">{workspaceMembers.length}</span></div>{canManageWorkspace && <form className="member-invite-form workspace-only" onSubmit={inviteWorkspaceMember}><label>Email<input type="email" value={invitationForm.email} onChange={(event) => setInvitationForm({ ...invitationForm, email: event.target.value })} placeholder="teammate@example.com" required /></label><label>Workspace role<select value={invitationForm.role} onChange={(event) => setInvitationForm({ ...invitationForm, role: event.target.value })}><option value="member">Member</option><option value="admin">Admin</option></select></label><button className="primary" disabled={busy}>Create invite</button></form>}{invitationUrl && <div className="invitation-result"><div><strong>Invitation link</strong><small>It is email-bound and expires in seven days.</small></div><code>{invitationUrl}</code><button className="secondary" onClick={() => navigator.clipboard.writeText(invitationUrl)}>Copy</button></div>}<div className="member-settings-list">{workspaceMembers.map((member) => { const lastOwner = member.role === 'owner' && workspaceOwnerCount === 1; return <div key={member.user_id}><span className="avatar small-avatar">{member.name.slice(0, 1).toUpperCase()}</span><div><strong>{member.name}{member.user_id === currentUser.id ? ' (You)' : ''}</strong><small>{member.email}</small></div>{canManageWorkspace ? <><select aria-label={`Workspace role for ${member.name}`} value={member.role} disabled={busy || lastOwner} onChange={(event) => updateWorkspaceMember(member.user_id, event.target.value)}><option value="member">Member</option><option value="admin">Admin</option><option value="owner">Owner</option></select><button className="danger-text" disabled={busy || lastOwner} title={lastOwner ? 'A workspace must keep an owner' : ''} onClick={() => removeWorkspaceMember(member)}>Remove</button></> : <span className="role-chip">{member.role}</span>}</div>; })}</div></article>}
+        {settingsTab === 'relations' && <article className="settings-card relation-settings"><div className="settings-card-heading"><div><h3>Relationship types</h3><p>Define the vocabulary people use to connect issues. System types remain available to every team.</p></div><span className="count-badge">{relationTypes.length}</span></div><div className="relation-type-list">{relationTypes.map((type) => <div key={type.id}><div><strong>{type.forward_label}</strong><span>⇄</span><strong>{type.inverse_label}</strong></div><small>{type.key} · {type.category}{type.symmetric ? ' · symmetric' : ''}{type.allow_cycles ? '' : ' · cycle-safe'}</small><span className={type.is_system ? 'system-chip' : 'custom-chip'}>{type.is_system ? 'System' : 'Custom'}</span></div>)}</div>{canManageWorkspace && <form className="relation-type-form" onSubmit={createRelationType}><h4>Create a relationship type</h4><div className="form-grid"><label>Key<input placeholder="duplicates" pattern="[a-z][a-z0-9_]+" value={relationTypeForm.key} onChange={(event) => setRelationTypeForm({ ...relationTypeForm, key: event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '') })} required /></label><label>Category<select value={relationTypeForm.category} onChange={(event) => setRelationTypeForm({ ...relationTypeForm, category: event.target.value, allow_cycles: event.target.value !== 'dependency' })}><option value="custom">Custom</option><option value="dependency">Dependency</option></select></label><label>Forward label<input placeholder="duplicates" value={relationTypeForm.forward_label} onChange={(event) => setRelationTypeForm({ ...relationTypeForm, forward_label: event.target.value, inverse_label: relationTypeForm.symmetric ? event.target.value : relationTypeForm.inverse_label })} required /></label><label>Inverse label<input placeholder="is duplicated by" value={relationTypeForm.inverse_label} onChange={(event) => setRelationTypeForm({ ...relationTypeForm, inverse_label: event.target.value })} disabled={relationTypeForm.symmetric} required /></label></div><div className="relation-type-options"><label className="settings-checkbox"><input type="checkbox" checked={relationTypeForm.symmetric} onChange={(event) => setRelationTypeForm({ ...relationTypeForm, symmetric: event.target.checked, inverse_label: event.target.checked ? relationTypeForm.forward_label : relationTypeForm.inverse_label })} />Same label in both directions</label><label className="settings-checkbox"><input type="checkbox" checked={relationTypeForm.allow_cycles} onChange={(event) => setRelationTypeForm({ ...relationTypeForm, allow_cycles: event.target.checked })} />Allow circular relationships</label></div><button className="primary" disabled={busy}>Create type</button></form>}</article>}
         {settingsTab === 'applications' && <article className="integration-card">
           <header><div className="github-mark">GH</div><div><h3>GitHub</h3><p>Automatically link pull requests to CommonPlan issues by item key.</p></div>{githubHealthLoading ? <span className="integration-status checking">Checking…</span> : <span className={`integration-status ${githubHealth?.configured ? 'connected' : 'setup'}`}>{githubHealth?.configured ? 'Connected' : 'Setup required'}</span>}</header>
           {githubHealth?.forbidden ? <div className="integration-permission"><strong>Workspace admin access required</strong><p>{githubHealth.message}</p></div> : <>
@@ -1343,6 +1394,13 @@ function formatDateTime(value) {
 
 function memberName(members, userId) {
   return members.find((member) => member.user_id === userId)?.name || 'Former member';
+}
+
+function IssueListRow({ issue, issues, workflowStates, onOpen }) {
+  const parent = issue.parent_issue_id ? issues.find((candidate) => candidate.id === issue.parent_issue_id) : null;
+  const children = issues.filter((candidate) => candidate.parent_issue_id === issue.id);
+  const completed = children.filter((child) => workflowStates.find((state) => state.id === child.workflow_state_id)?.category === 'done').length;
+  return <button className={`issue-row ${parent ? 'sub-issue-row' : ''}`} onClick={() => onOpen(issue)}><span className="priority-dot" data-priority={issue.priority} /><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong>{parent && <span className="parent-context">↳ {parent.key}</span>}{children.length > 0 && <span className="sub-issue-progress">{completed}/{children.length} sub-issues</span>}<span className="row-meta">{issue.labels.map((label) => label.name).join(', ')}</span></button>;
 }
 
 function projectToDraft(project) {

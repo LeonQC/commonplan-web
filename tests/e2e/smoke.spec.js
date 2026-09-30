@@ -41,6 +41,17 @@ test('registration reaches workspace navigation and preserves scope boundaries',
     await expect(page.getByRole('heading', { name: 'Issue detail' })).toBeVisible();
   }
 
+  await page.getByLabel('Issue key').fill('CORE-1');
+  await page.getByRole('button', { name: 'Add relationship' }).click();
+  await expect(page.locator('.relation-list')).toContainText('is blocked by');
+  await expect(page.locator('.relation-list')).toContainText('CORE-1');
+  await page.getByPlaceholder('Add a sub-issue…').fill('Nested acceptance check');
+  await page.locator('.sub-issues form button').click();
+  await expect(page.locator('.sub-issues')).toContainText('Nested acceptance check');
+  await page.locator('.team-subnav').getByRole('button', { name: 'Issues' }).click();
+  await expect(page.locator('.sub-issue-row')).toContainText('↳ CORE-4');
+  await expect(page.locator('.issue-board')).toContainText('0/1 sub-issues');
+
   await page.locator('.team-subnav').getByRole('button', { name: 'Summary' }).click();
   await expect(page.getByRole('heading', { name: 'Workflow composition' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Priority mix' })).toBeVisible();
