@@ -29,6 +29,27 @@ test('registration reaches workspace navigation and preserves scope boundaries',
   await expect(page.locator('.team-subnav')).toContainText('Members');
   await expect(page.locator('.workspace-nav')).not.toContainText('Members');
 
+  for (const [index, status] of ['Backlog', 'Todo', 'In Progress', 'Done'].entries()) {
+    await page.locator('.team-subnav').getByRole('button', { name: 'Issues' }).click();
+    await page.getByRole('button', { name: 'New issue' }).click();
+    const issueForm = page.locator('form.editor-card').first();
+    await issueForm.getByLabel('Title').fill(`Visualization sample ${index + 1}`);
+    await issueForm.getByLabel('Status').selectOption({ label: status });
+    await issueForm.getByLabel('Priority').selectOption(String(Math.min(index + 1, 4)));
+    await issueForm.getByLabel('Assignee').selectOption({ label: 'Playwright User' });
+    await issueForm.getByRole('button', { name: 'Create issue' }).click();
+    await expect(page.getByRole('heading', { name: 'Issue detail' })).toBeVisible();
+  }
+
+  await page.locator('.team-subnav').getByRole('button', { name: 'Summary' }).click();
+  await expect(page.getByRole('heading', { name: 'Workflow composition' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Priority mix' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Open workload' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Project delivery' })).toBeVisible();
+  await expect(page.getByRole('img', { name: /created and completed issue trend/i })).toBeVisible();
+  await expect(page.locator('.composition-strip button')).toHaveCount(4);
+  await expect(page.locator('.workload-list button')).toHaveCount(1);
+
   await page.locator('.team-subnav').getByRole('button', { name: 'Cycles' }).click();
   await expect(page.getByRole('heading', { name: 'Cycle schedule' })).toBeVisible();
   const rolloverCheckbox = await page.getByLabel('Move unfinished issues into the next cycle').boundingBox();

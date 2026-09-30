@@ -1087,14 +1087,14 @@ function App() {
           {!data ? <div className="empty-panel">Summary is unavailable.</div> : <>
             <div className="summary-metrics">{Object.entries({ total: 'Matching', open: 'Open', in_progress: 'In progress', completed: 'Completed', overdue: 'Overdue', unassigned: 'Unassigned' }).map(([key, label]) => <Metric key={key} label={label} value={data.headline_metrics[key]} />)}</div>
             <div className="summary-grid">
-              <SummaryDistribution title="Status distribution" rows={data.status_distribution} labelKey="label" onSelect={(row) => applySummaryFilters({ status: row.category })} />
-              <SummaryDistribution title="Priority distribution" rows={data.priority_distribution} labelKey="label" onSelect={(row) => applySummaryFilters({ priority: String(row.priority) })} />
-              <SummaryDistribution title="Assignee workload" rows={data.assignee_distribution} labelKey="name" onSelect={(row) => applySummaryFilters({ assignee: row.user_id == null ? 'unassigned' : String(row.user_id) })} />
-              <SummaryDistribution title="Project distribution" rows={data.project_distribution} labelKey="name" valueKey="percent" suffix="%" onSelect={(row) => applySummaryFilters({ project: row.project_id || 'none' })} />
+              <StatusComposition rows={data.status_distribution} onSelect={(row) => applySummaryFilters({ status: row.category })} />
+              <PriorityComposition rows={data.priority_distribution} onSelect={(row) => applySummaryFilters({ priority: String(row.priority) })} />
+              <WorkloadRanking rows={data.assignee_distribution} onSelect={(row) => applySummaryFilters({ assignee: row.user_id == null ? 'unassigned' : String(row.user_id) })} />
+              <ProjectProgress rows={data.project_distribution} onSelect={(row) => applySummaryFilters({ project: row.project_id || 'none' })} />
             </div>
             <div className="summary-progress-grid">
-              <section className="summary-card cycle-summary"><div className="summary-card-heading"><div><h2>Cycle progress</h2><p>Done versus non-canceled issues</p></div></div>{data.cycle_progress ? <><div className="cycle-summary-value"><strong>{data.cycle_progress.percent}%</strong><span>{data.cycle_progress.completed}/{data.cycle_progress.total} · {data.cycle_progress.name}</span></div><div className="project-progress"><span style={{ width: `${data.cycle_progress.percent}%` }} /></div></> : <div className="summary-empty">No current or selected cycle.</div>}</section>
-              <section className="summary-card trend-card"><div className="summary-card-heading"><div><h2>Created / completed trend</h2><p>{data.trend.from} — {data.trend.to}</p></div><div className="trend-legend"><span className="created" />Created <span className="completed" />Completed</div></div><div className="trend-chart">{data.trend.buckets.map((bucket) => <div className="trend-bucket" key={bucket.date} title={`${bucket.date}: ${bucket.created} created, ${bucket.completed} completed`}><div><span className="created" style={{ height: `${Math.max(3, bucket.created / maxTrend * 100)}%` }} /><span className="completed" style={{ height: `${Math.max(3, bucket.completed / maxTrend * 100)}%` }} /></div><small>{bucket.date.slice(5)}</small></div>)}</div></section>
+              <CycleProgressRing data={data.cycle_progress} />
+              <TrendLines trend={data.trend} maxValue={maxTrend} />
             </div>
             <section className="summary-card"><div className="summary-card-heading"><div><h2>Attention</h2><p>Bounded queues for work that may need action.</p></div></div><div className="attention-grid">{Object.entries(data.attention_issues).map(([kind, rows]) => <div className="attention-column" key={kind}><h3>{kind.replaceAll('_', ' ')}</h3>{rows.map((issue) => <button key={issue.id} onClick={() => openIssue(issue)}><span>{issue.key}</span><strong>{issue.title}</strong></button>)}{!rows.length && <p>Nothing here.</p>}</div>)}</div></section>
             <div className="summary-bottom-grid">
@@ -1371,9 +1371,48 @@ function ObjectiveList({ title, items, onToggle }) {
   return <div className="objective-list"><h3>{title}</h3>{items.map((item) => <button type="button" key={item.id} className={item.is_met ? 'complete' : ''} onClick={() => onToggle(item)}><span>{item.is_met ? '✓' : ''}</span><strong>{item.body}</strong></button>)}{!items.length && <p>No items yet.</p>}</div>;
 }
 
-function SummaryDistribution({ title, rows, labelKey, valueKey = 'count', suffix = '', onSelect }) {
-  const max = Math.max(1, ...rows.map((row) => row[valueKey]));
-  return <section className="summary-card distribution-card"><div className="summary-card-heading"><div><h2>{title}</h2><p>{onSelect ? 'Select a row to filter the full summary.' : 'Distribution within this cycle.'}</p></div></div><div className="distribution-list">{rows.map((row, index) => <button key={`${row[labelKey]}-${index}`} onClick={() => onSelect?.(row)}><div><strong>{row[labelKey]}</strong><span>{row[valueKey]}{suffix}</span></div><i><span style={{ width: `${row[valueKey] / max * 100}%` }} /></i></button>)}{!rows.length && <div className="summary-empty">No matching data.</div>}</div></section>;
+function StatusComposition({ rows, onSelect }) {
+  const total = rows.reduce((sum, row) => sum + row.count, 0);
+  return <section className="summary-card composition-card"><div className="summary-card-heading"><div><h2>Workflow composition</h2><p>How matching work is distributed by status.</p></div><span>{total}</span></div>{total ? <><div className="composition-strip" aria-label={`Workflow composition, ${total} issues`}>{rows.filter((row) => row.count).map((row) => <button key={row.category} className={`composition-${row.category}`} style={{ width: `${row.count / total * 100}%` }} title={`${row.label}: ${row.count} (${Math.round(row.count / total * 100)}%)`} aria-label={`${row.label}: ${row.count} issues, ${Math.round(row.count / total * 100)} percent`} onClick={() => onSelect(row)} />)}</div><div className="composition-legend">{rows.map((row) => <button key={row.category} onClick={() => onSelect(row)}><i className={`composition-${row.category}`} /><span>{row.label}</span><strong>{row.count}</strong><small>{total ? Math.round(row.count / total * 100) : 0}%</small></button>)}</div></> : <div className="summary-empty">No matching work.</div>}</section>;
+}
+
+function PriorityComposition({ rows, onSelect }) {
+  const total = rows.reduce((sum, row) => sum + row.count, 0);
+  return <section className="summary-card priority-card"><div className="summary-card-heading"><div><h2>Priority mix</h2><p>Counts and share, without implying a time axis.</p></div><span>{total}</span></div><div className="priority-tiles">{rows.map((row) => <button key={row.priority} className={`priority-${row.priority}`} onClick={() => onSelect(row)}><span className="priority-mark">{row.priority === 0 ? '—' : '!'.repeat(row.priority)}</span><strong>{row.count}</strong><small>{row.label} · {total ? Math.round(row.count / total * 100) : 0}%</small></button>)}</div></section>;
+}
+
+function WorkloadRanking({ rows, onSelect }) {
+  const max = Math.max(1, ...rows.map((row) => row.count));
+  return <section className="summary-card workload-card"><div className="summary-card-heading"><div><h2>Open workload</h2><p>Ranked comparison is where length works best.</p></div><span>{rows.reduce((sum, row) => sum + row.count, 0)}</span></div><div className="workload-list">{rows.map((row) => <button key={row.user_id ?? 'unassigned'} onClick={() => onSelect(row)}><span className="workload-avatar">{row.name.slice(0, 1).toUpperCase()}</span><strong>{row.name}</strong><i><span style={{ width: `${row.count / max * 100}%` }} /></i><b>{row.count}</b></button>)}{!rows.length && <div className="summary-empty">No open assigned work.</div>}</div></section>;
+}
+
+function ProjectProgress({ rows, onSelect }) {
+  return <section className="summary-card project-progress-card"><div className="summary-card-heading"><div><h2>Project delivery</h2><p>Completion against each project's active scope.</p></div><span>{rows.length}</span></div><div className="project-progress-list">{rows.map((row) => <button key={row.project_id || 'none'} onClick={() => onSelect(row)}><div><strong>{row.name}</strong><span>{row.completed}/{row.total}</span></div><i><span style={{ width: `${row.percent}%` }} /></i><b>{row.percent}%</b></button>)}{!rows.length && <div className="summary-empty">No matching projects.</div>}</div></section>;
+}
+
+function CycleProgressRing({ data }) {
+  const radius = 43;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - (data?.percent || 0) / 100);
+  return <section className="summary-card cycle-summary"><div className="summary-card-heading"><div><h2>Cycle progress</h2><p>Completed versus remaining scope.</p></div></div>{data ? <div className="cycle-ring-layout"><div className="cycle-ring"><svg viewBox="0 0 112 112" role="img" aria-label={`${data.percent}% complete`}><circle className="ring-track" cx="56" cy="56" r={radius} /><circle className="ring-value" cx="56" cy="56" r={radius} strokeDasharray={circumference} strokeDashoffset={offset} /><text x="56" y="53">{data.percent}%</text><text className="ring-caption" x="56" y="69">complete</text></svg></div><div><strong>{data.name}</strong><span>{data.completed} completed</span><span>{Math.max(0, data.total - data.completed)} remaining</span><small>{data.total} scoped issues</small></div></div> : <div className="summary-empty">No current or selected cycle.</div>}</section>;
+}
+
+function TrendLines({ trend, maxValue }) {
+  const width = 680;
+  const height = 190;
+  const left = 34;
+  const right = 16;
+  const top = 18;
+  const bottom = 30;
+  const chartWidth = width - left - right;
+  const chartHeight = height - top - bottom;
+  const x = (index) => left + (trend.buckets.length <= 1 ? chartWidth / 2 : index / (trend.buckets.length - 1) * chartWidth);
+  const y = (value) => top + (1 - value / Math.max(1, maxValue)) * chartHeight;
+  const points = (key) => trend.buckets.map((bucket, index) => `${x(index)},${y(bucket[key])}`).join(' ');
+  const createdTotal = trend.buckets.reduce((sum, bucket) => sum + bucket.created, 0);
+  const completedTotal = trend.buckets.reduce((sum, bucket) => sum + bucket.completed, 0);
+  const labelIndexes = [...new Set([0, Math.floor((trend.buckets.length - 1) / 2), trend.buckets.length - 1])].filter((index) => index >= 0);
+  return <section className="summary-card trend-card"><div className="summary-card-heading"><div><h2>Flow over time</h2><p>{trend.from} — {trend.to}</p></div><div className="trend-total"><span><i className="created" />Created <b>{createdTotal}</b></span><span><i className="completed" />Completed <b>{completedTotal}</b></span></div></div>{trend.buckets.length ? <div className="trend-line-chart"><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Created and completed issue trend from ${trend.from} through ${trend.to}`} preserveAspectRatio="none"><title>Created and completed issues by day</title>{[0, .5, 1].map((ratio) => <g key={ratio}><line className="trend-gridline" x1={left} x2={width - right} y1={top + ratio * chartHeight} y2={top + ratio * chartHeight} /><text className="trend-axis-value" x={left - 8} y={top + ratio * chartHeight + 3}>{Math.round(maxValue * (1 - ratio))}</text></g>)}<polyline className="trend-line created" points={points('created')} /><polyline className="trend-line completed" points={points('completed')} strokeDasharray="5 4" />{trend.buckets.map((bucket, index) => <g key={bucket.date}><circle className="trend-point created" cx={x(index)} cy={y(bucket.created)} r="3"><title>{bucket.date}: {bucket.created} created</title></circle><circle className="trend-point completed" cx={x(index)} cy={y(bucket.completed)} r="3"><title>{bucket.date}: {bucket.completed} completed</title></circle></g>)}{labelIndexes.map((index) => <text key={index} className="trend-axis-date" x={x(index)} y={height - 7} textAnchor={index === 0 ? 'start' : index === trend.buckets.length - 1 ? 'end' : 'middle'}>{trend.buckets[index].date.slice(5)}</text>)}</svg><ul className="sr-only">{trend.buckets.map((bucket) => <li key={bucket.date}>{bucket.date}: {bucket.created} created, {bucket.completed} completed</li>)}</ul></div> : <div className="summary-empty">No trend data.</div>}</section>;
 }
 
 function ActivityItem({ item, currentUser, onUpdate, onDelete }) {
