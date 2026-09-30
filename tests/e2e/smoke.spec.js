@@ -48,9 +48,16 @@ test('registration reaches workspace navigation and preserves scope boundaries',
   await page.getByPlaceholder('Add a sub-issue…').fill('Nested acceptance check');
   await page.locator('.sub-issues form button').click();
   await expect(page.locator('.sub-issues')).toContainText('Nested acceptance check');
+  await page.locator('.relation-list').getByRole('button', { name: /CORE-1/ }).click();
+  await expect(page.locator('.relation-list')).toContainText('blocks');
+  await expect(page.locator('.relation-list')).toContainText('CORE-4');
+  await page.getByLabel('Relationship').click();
+  await expect(page.locator('.relation-form').getByRole('button', { name: 'blocks', exact: true })).toBeVisible();
   await page.locator('.team-subnav').getByRole('button', { name: 'Issues' }).click();
   await expect(page.locator('.sub-issue-row')).toContainText('↳ CORE-4');
   await expect(page.locator('.issue-board')).toContainText('0/1 sub-issues');
+  await expect(page.locator('.dependency-indicator.blocking[title*="blocks CORE-4"]')).toBeVisible();
+  await expect(page.locator('.dependency-indicator.blocked[title*="is blocked by CORE-1"]')).toBeVisible();
 
   await page.locator('.team-subnav').getByRole('button', { name: 'Summary' }).click();
   await expect(page.getByRole('heading', { name: 'Workflow composition' })).toBeVisible();

@@ -314,7 +314,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .issue-list { margin-top: 14px; }
 .state-group { overflow: hidden; margin-bottom: 8px; background: white; border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-panel); }
 .state-heading { min-height: 38px; display: flex; align-items: center; gap: 7px; padding: 8px 11px; background: #f8f8fa; border-bottom: 1px solid #efeff2; color: #92949f; font-size: 10px; }
-.issue-row { width: 100%; min-height: 42px; display: grid; grid-template-columns: auto auto minmax(120px, 1fr) auto auto auto; align-items: center; gap: 10px; padding: 8px 11px; border: 0; border-top: 1px solid #efeff2; background: transparent; color: #363740; text-align: left; }
+.issue-row { width: 100%; min-height: 42px; display: grid; grid-template-columns: auto auto minmax(120px, 1fr) auto auto auto auto; align-items: center; gap: 10px; padding: 8px 11px; border: 0; border-top: 1px solid #efeff2; background: transparent; color: #363740; text-align: left; }
+.dependency-badges { display: inline-flex; align-items: center; gap: 4px; }
+.dependency-indicator { min-width: 23px; height: 20px; display: inline-flex; align-items: center; justify-content: center; gap: 2px; padding: 0 5px; border: 1px solid #dedee7; border-radius: 6px; background: #f7f7fa; color: #6d6f7b; font-size: 12px; font-weight: 750; cursor: help; }
+.dependency-indicator small { font-size: 7px; font-weight: 700; }
+.dependency-indicator.blocked { border-color: #f0caca; background: #fff4f3; color: #b45c62; }
+.dependency-indicator.blocking { border-color: #d9d6ff; background: #f4f3ff; color: #625fd0; }
+.dependency-indicator.dependency { border-color: #cfe2e8; background: #f1f8fa; color: #477b88; }
+.kanban-card .dependency-badges { margin-left: auto; }
 .issue-row:first-child { border-top: 0; }
 .issue-row:hover { background: #f7f7fa; }
 .issue-row.selected { background: var(--accent-soft); }

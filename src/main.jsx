@@ -117,7 +117,8 @@ function App() {
   const [issueCollaboration, setIssueCollaboration] = useState({ watching: false, watchers: [], sub_issues: [] });
   const [relationTypes, setRelationTypes] = useState([]);
   const [issueRelations, setIssueRelations] = useState([]);
-  const [relationForm, setRelationForm] = useState({ relation_type_id: '', target_issue_key: '' });
+  const [issueRelationSummaries, setIssueRelationSummaries] = useState([]);
+  const [relationForm, setRelationForm] = useState({ relation_type_id: '', direction: 'outgoing', target_issue_key: '' });
   const [relationTypeForm, setRelationTypeForm] = useState({ key: '', forward_label: '', inverse_label: '', category: 'custom', symmetric: false, allow_cycles: true });
   const [issueDraft, setIssueDraft] = useState({ title: '', description: '' });
   const [commentBody, setCommentBody] = useState('');
@@ -192,7 +193,7 @@ function App() {
   async function loadPlanning(selectedWorkspaceId, selectedTeamId) {
     if (!selectedWorkspaceId || !selectedTeamId) return;
     const base = `/api/v1/workspaces/${selectedWorkspaceId}/teams/${selectedTeamId}`;
-    const [nextOverview, nextStates, nextCycles, nextCycleSettings, nextLabels, nextIssues, nextMembers, nextProjects, nextRelationTypes] = await Promise.all([
+    const [nextOverview, nextStates, nextCycles, nextCycleSettings, nextLabels, nextIssues, nextMembers, nextProjects, nextRelationTypes, nextRelationSummaries] = await Promise.all([
       request(`${base}/overview`),
       request(`${base}/workflow-states`),
       request(`${base}/cycles`),
@@ -202,6 +203,7 @@ function App() {
       request(`${base}/members`),
       request(`${base}/projects`),
       request(`/api/v1/workspaces/${selectedWorkspaceId}/relation-types`),
+      request(`/api/v1/workspaces/${selectedWorkspaceId}/teams/${selectedTeamId}/issue-relation-summaries`),
     ]);
     setOverview(nextOverview);
     setWorkflowStates(nextStates);
@@ -212,7 +214,8 @@ function App() {
     setMembers(nextMembers);
     setProjects(nextProjects);
     setRelationTypes(nextRelationTypes);
-    setRelationForm((form) => ({ ...form, relation_type_id: form.relation_type_id || nextRelationTypes[0]?.id || '' }));
+    setIssueRelationSummaries(nextRelationSummaries);
+    setRelationForm((form) => ({ ...form, relation_type_id: form.relation_type_id || nextRelationTypes[0]?.id || '', direction: form.direction || 'outgoing' }));
     if (selectedCycle) {
       const refreshedCycle = nextCycles.find((cycle) => cycle.id === selectedCycle.id);
       if (refreshedCycle) setSelectedCycle(refreshedCycle);
@@ -968,7 +971,12 @@ function App() {
     setBusy(true);
     try {
       await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/relations`, { method: 'POST', body: JSON.stringify(relationForm) });
-      setIssueRelations(await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/relations`));
+      const [relations, summaries] = await Promise.all([
+        request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/relations`),
+        request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/issue-relation-summaries`),
+      ]);
+      setIssueRelations(relations);
+      setIssueRelationSummaries(summaries);
       setRelationForm((form) => ({ ...form, target_issue_key: '' }));
       setStatus('Issue relation added');
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
@@ -979,6 +987,7 @@ function App() {
     try {
       await request(`/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}/relations/${relationId}`, { method: 'DELETE' });
       setIssueRelations((rows) => rows.filter((row) => row.id !== relationId));
+      setIssueRelationSummaries(await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/issue-relation-summaries`));
       setStatus('Issue relation removed');
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
@@ -1200,7 +1209,7 @@ function App() {
                 <div className="collaboration-heading"><div><h2>Collaboration</h2><span>{issueCollaboration.watchers.length} watching</span></div><button className={issueCollaboration.watching ? 'watching' : ''} onClick={toggleWatch} disabled={busy}>{issueCollaboration.watching ? 'Watching' : 'Watch'}</button></div>
                 <div className="watcher-row">{issueCollaboration.watchers.map((watcher) => <span key={watcher.user_id} title={`${watcher.name} · ${watcher.reason}`}>{watcher.name.slice(0, 1).toUpperCase()}</span>)}{!issueCollaboration.watchers.length && <small>No watchers yet.</small>}</div>
                 <div className="sub-issues"><h3>Sub-issues <span>{issueCollaboration.sub_issues.length}</span></h3>{issueCollaboration.sub_issues.map((issue) => <button key={issue.id} onClick={() => openIssue(issue)}><span>{issue.key}</span><strong>{issue.title}</strong></button>)}<form onSubmit={createSubIssue}><input placeholder="Add a sub-issue…" value={subIssueTitle} onChange={(event) => setSubIssueTitle(event.target.value)} /><button disabled={busy || !subIssueTitle.trim()}>+</button></form></div>
-                <div className="issue-relations"><div className="relation-heading"><h3>Relationships <span>{issueRelations.length}</span></h3><small>Dependencies and contextual links</small></div><div className="relation-list">{issueRelations.map((relation) => <div key={relation.id}><span>{relation.label}</span><button type="button" onClick={() => openIssue(relation.related_issue)}><strong>{relation.related_issue.key}</strong>{relation.related_issue.title}</button><button type="button" className="relation-remove" aria-label={`Remove relation to ${relation.related_issue.key}`} onClick={() => deleteIssueRelation(relation.id)} disabled={busy}>×</button></div>)}{!issueRelations.length && <p>No relationships yet.</p>}</div><form className="relation-form" onSubmit={createIssueRelation}><ChoicePicker label="Relationship" value={relationForm.relation_type_id} options={relationTypes.map((type) => ({ value: type.id, label: type.forward_label }))} onChange={(value) => setRelationForm({ ...relationForm, relation_type_id: value })} disabled={busy} /><label>Issue key<input list="relation-issue-options" placeholder="e.g. CORE-12" value={relationForm.target_issue_key} onChange={(event) => setRelationForm({ ...relationForm, target_issue_key: event.target.value.toUpperCase() })} /></label><datalist id="relation-issue-options">{issues.filter((issue) => issue.id !== selectedIssue.id).map((issue) => <option key={issue.id} value={issue.key}>{issue.title}</option>)}</datalist><button className="secondary" disabled={busy || !relationForm.relation_type_id || !relationForm.target_issue_key}>Add relationship</button></form></div>
+                <div className="issue-relations"><div className="relation-heading"><h3>Relationships <span>{issueRelations.length}</span></h3><small>Dependencies and contextual links</small></div><div className="relation-list">{issueRelations.map((relation) => <div key={relation.id} className={relation.type_key === 'blocked_by' ? `dependency-${relation.direction}` : ''}><span>{relation.label}</span><button type="button" onClick={() => openIssue(relation.related_issue)}><strong>{relation.related_issue.key}</strong>{relation.related_issue.title}</button><button type="button" className="relation-remove" aria-label={`Remove relation to ${relation.related_issue.key}`} onClick={() => deleteIssueRelation(relation.id)} disabled={busy}>×</button></div>)}{!issueRelations.length && <p>No relationships yet.</p>}</div><form className="relation-form" onSubmit={createIssueRelation}><ChoicePicker label="Relationship" value={`${relationForm.relation_type_id}|${relationForm.direction}`} options={relationDirectionOptions(relationTypes)} onChange={(value) => { const [relation_type_id, direction] = value.split('|'); setRelationForm({ ...relationForm, relation_type_id, direction }); }} disabled={busy} /><label>Issue key<input list="relation-issue-options" placeholder="e.g. CORE-12" value={relationForm.target_issue_key} onChange={(event) => setRelationForm({ ...relationForm, target_issue_key: event.target.value.toUpperCase() })} /></label><datalist id="relation-issue-options">{issues.filter((issue) => issue.id !== selectedIssue.id).map((issue) => <option key={issue.id} value={issue.key}>{issue.title}</option>)}</datalist><button className="secondary" disabled={busy || !relationForm.relation_type_id || !relationForm.target_issue_key}>Add relationship</button></form></div>
               </section>
               <div className="properties-heading"><h2>Properties</h2><span>Changes save immediately</span></div>
               <ChoicePicker label="Status" value={selectedIssue.workflow_state_id} options={workflowStates.map((state) => ({ value: state.id, label: state.name }))} onChange={(value) => updateIssue({ workflow_state_id: value })} disabled={busy} />
@@ -1222,7 +1231,7 @@ function App() {
       <section className="planning-list-page">
         <div className="toolbar"><div><strong>{issues.length} issues</strong><span>Plan and track team work</span></div><button className="primary" onClick={() => setShowIssueForm(!showIssueForm)}>+ New issue</button></div>
         {showIssueForm && <form className="editor-card" onSubmit={createIssue}><div className="form-grid"><label className="wide">Title<input autoFocus value={issueForm.title} onChange={(e) => setIssueForm({ ...issueForm, title: e.target.value })} required /></label><label className="wide">Description<textarea value={issueForm.description} onChange={(e) => setIssueForm({ ...issueForm, description: e.target.value })} /></label><label>Status<select value={issueForm.workflow_state_id} onChange={(e) => setIssueForm({ ...issueForm, workflow_state_id: e.target.value })}><option value="">Default</option>{workflowStates.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label><label>Priority<select value={issueForm.priority} onChange={(e) => setIssueForm({ ...issueForm, priority: e.target.value })}>{['No priority', 'Low', 'Medium', 'High', 'Urgent'].map((name, value) => <option key={name} value={value}>{name}</option>)}</select></label><label>Cycle<select value={issueForm.cycle_id} onChange={(e) => setIssueForm({ ...issueForm, cycle_id: e.target.value })}><option value="">No cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>{cycle.name}</option>)}</select></label><label>Project<select value={issueForm.project_id} onChange={(e) => setIssueForm({ ...issueForm, project_id: e.target.value, milestone_id: '' })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label>Milestone<select value={issueForm.milestone_id} onChange={(e) => setIssueForm({ ...issueForm, milestone_id: e.target.value })} disabled={!issueForm.project_id}><option value="">No milestone</option>{projects.find((project) => project.id === issueForm.project_id)?.milestones.map((milestone) => <option key={milestone.id} value={milestone.id}>{milestone.name}</option>)}</select></label><label>Assignee<select value={issueForm.assignee_user_id} onChange={(e) => setIssueForm({ ...issueForm, assignee_user_id: e.target.value })}><option value="">Unassigned</option>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name}</option>)}</select></label><label>Due date<input type="date" value={issueForm.due_date} onChange={(e) => setIssueForm({ ...issueForm, due_date: e.target.value })} /></label><label className="wide">Labels<select multiple value={issueForm.label_ids} onChange={(e) => setIssueForm({ ...issueForm, label_ids: [...e.target.selectedOptions].map((option) => option.value) })}>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select></label></div><div className="form-actions"><button type="button" className="secondary" onClick={() => setShowIssueForm(false)}>Cancel</button><button className="primary" disabled={busy}>Create issue</button></div></form>}
-        <div className="issue-board">{workflowStates.map((state) => <div className="state-group" key={state.id}><div className="state-heading"><StateBadge name={state.name} /><span>{issues.filter((issue) => issue.workflow_state_id === state.id).length}</span></div>{issues.filter((issue) => issue.workflow_state_id === state.id).map((issue) => <IssueListRow key={issue.id} issue={issue} issues={issues} workflowStates={workflowStates} onOpen={openIssue} />)}</div>)}</div>
+        <div className="issue-board">{workflowStates.map((state) => <div className="state-group" key={state.id}><div className="state-heading"><StateBadge name={state.name} /><span>{issues.filter((issue) => issue.workflow_state_id === state.id).length}</span></div>{issues.filter((issue) => issue.workflow_state_id === state.id).map((issue) => <IssueListRow key={issue.id} issue={issue} issues={issues} workflowStates={workflowStates} relations={issueRelationSummaries.filter((relation) => relation.issue_key === issue.key)} onOpen={openIssue} />)}</div>)}</div>
         <div className="settings-grid"><form className="mini-card" onSubmit={createLabel}><h3>Create label</h3><div className="inline-fields"><input placeholder="Label name" value={labelForm.name} onChange={(e) => setLabelForm({ ...labelForm, name: e.target.value })} required /><input className="color-input" type="color" value={labelForm.color} onChange={(e) => setLabelForm({ ...labelForm, color: e.target.value })} /><button className="secondary">Add</button></div></form><div className="mini-card"><h3>Team labels</h3><div className="label-row">{labels.map((label) => <span className="label-pill" key={label.id} style={{ '--label-color': label.color }}>{label.name}</span>)}{!labels.length && <span className="muted">No labels</span>}</div></div></div>
       </section>
     );
@@ -1336,7 +1345,7 @@ function App() {
       return (
         <section className="cycle-board-page">
           <div className="cycle-board-toolbar"><button className="back-button" onClick={() => setSelectedCycle(null)}>← All cycles</button><div><span className="eyebrow">SPRINT BOARD</span><h2>{selectedCycle.name}</h2><p>{new Date(`${selectedCycle.starts_on}T00:00:00`).toLocaleDateString()} — {new Date(`${selectedCycle.ends_on}T00:00:00`).toLocaleDateString()}</p></div><div className="cycle-board-progress"><strong>{percent}%</strong><span>{completed}/{cycleIssues.length} completed</span><i><span style={{ width: `${percent}%` }} /></i></div></div>
-          <div className="cycle-kanban">{workflowStates.map((state) => { const stateIssues = cycleIssues.filter((issue) => issue.workflow_state_id === state.id); return <section className={`kanban-column category-${state.category}`} key={state.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const issue = cycleIssues.find((row) => row.id === event.dataTransfer.getData('text/plain')); if (issue) moveCycleIssue(issue, state.id); }}><header><div><StateBadge name={state.name} /><span>{stateIssues.length}</span></div><button aria-label={`Create issue in ${state.name}`} onClick={() => createIssueInCycleState(state.id)}>+</button></header><div className="kanban-cards">{stateIssues.map((issue) => <article className="kanban-card" key={issue.id} draggable onDragStart={(event) => event.dataTransfer.setData('text/plain', issue.id)} onClick={() => openIssue(issue)} tabIndex="0" role="button"><div><span className="priority-dot" data-priority={issue.priority} /><span className="issue-key">{issue.key}</span></div><h3>{issue.title}</h3><footer><span>{issue.assignee_user_id ? memberName(members, issue.assignee_user_id) : 'Unassigned'}</span>{issue.due_date && <time>{issue.due_date}</time>}</footer></article>)}{!stateIssues.length && <div className="kanban-empty">Drop issues here</div>}</div></section>; })}</div>
+          <div className="cycle-kanban">{workflowStates.map((state) => { const stateIssues = cycleIssues.filter((issue) => issue.workflow_state_id === state.id); return <section className={`kanban-column category-${state.category}`} key={state.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const issue = cycleIssues.find((row) => row.id === event.dataTransfer.getData('text/plain')); if (issue) moveCycleIssue(issue, state.id); }}><header><div><StateBadge name={state.name} /><span>{stateIssues.length}</span></div><button aria-label={`Create issue in ${state.name}`} onClick={() => createIssueInCycleState(state.id)}>+</button></header><div className="kanban-cards">{stateIssues.map((issue) => <article className="kanban-card" key={issue.id} draggable onDragStart={(event) => event.dataTransfer.setData('text/plain', issue.id)} onClick={() => openIssue(issue)} tabIndex="0" role="button"><div><span className="priority-dot" data-priority={issue.priority} /><span className="issue-key">{issue.key}</span><DependencyBadges relations={issueRelationSummaries.filter((relation) => relation.issue_key === issue.key)} /></div><h3>{issue.title}</h3><footer><span>{issue.assignee_user_id ? memberName(members, issue.assignee_user_id) : 'Unassigned'}</span>{issue.due_date && <time>{issue.due_date}</time>}</footer></article>)}{!stateIssues.length && <div className="kanban-empty">Drop issues here</div>}</div></section>; })}</div>
         </section>
       );
     }
@@ -1398,11 +1407,28 @@ function memberName(members, userId) {
   return members.find((member) => member.user_id === userId)?.name || 'Former member';
 }
 
-function IssueListRow({ issue, issues, workflowStates, onOpen }) {
+function IssueListRow({ issue, issues, workflowStates, relations = [], onOpen }) {
   const parent = issue.parent_issue_id ? issues.find((candidate) => candidate.id === issue.parent_issue_id) : null;
   const children = issues.filter((candidate) => candidate.parent_issue_id === issue.id);
   const completed = children.filter((child) => workflowStates.find((state) => state.id === child.workflow_state_id)?.category === 'done').length;
-  return <button className={`issue-row ${parent ? 'sub-issue-row' : ''}`} onClick={() => onOpen(issue)}><span className="priority-dot" data-priority={issue.priority} /><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong>{parent && <span className="parent-context">↳ {parent.key}</span>}{children.length > 0 && <span className="sub-issue-progress">{completed}/{children.length} sub-issues</span>}<span className="row-meta">{issue.labels.map((label) => label.name).join(', ')}</span></button>;
+  return <button className={`issue-row ${parent ? 'sub-issue-row' : ''}`} onClick={() => onOpen(issue)}><span className="priority-dot" data-priority={issue.priority} /><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong>{parent && <span className="parent-context">↳ {parent.key}</span>}{children.length > 0 && <span className="sub-issue-progress">{completed}/{children.length} sub-issues</span>}<DependencyBadges relations={relations} /><span className="row-meta">{issue.labels.map((label) => label.name).join(', ')}</span></button>;
+}
+
+function relationDirectionOptions(types) {
+  return types.flatMap((type) => {
+    const forward = { value: `${type.id}|outgoing`, label: type.forward_label };
+    if (type.symmetric || type.forward_label === type.inverse_label) return [forward];
+    return [forward, { value: `${type.id}|incoming`, label: type.inverse_label }];
+  });
+}
+
+function DependencyBadges({ relations }) {
+  const dependencies = relations.filter((relation) => relation.category === 'dependency');
+  if (!dependencies.length) return null;
+  const blockedBy = dependencies.filter((relation) => relation.type_key === 'blocked_by' && relation.direction === 'outgoing');
+  const blocking = dependencies.filter((relation) => relation.type_key === 'blocked_by' && relation.direction === 'incoming');
+  const other = dependencies.filter((relation) => relation.type_key !== 'blocked_by');
+  return <span className="dependency-badges" aria-label="Issue dependencies">{blockedBy.length > 0 && <span className="dependency-indicator blocked" title={blockedBy.map((relation) => `${relation.label} ${relation.related_issue_key}`).join('\n')} aria-label={blockedBy.map((relation) => `${relation.label} ${relation.related_issue_key}`).join(', ')}>⊣<small>{blockedBy.length}</small></span>}{blocking.length > 0 && <span className="dependency-indicator blocking" title={blocking.map((relation) => `${relation.label} ${relation.related_issue_key}`).join('\n')} aria-label={blocking.map((relation) => `${relation.label} ${relation.related_issue_key}`).join(', ')}>⊢<small>{blocking.length}</small></span>}{other.length > 0 && <span className="dependency-indicator dependency" title={other.map((relation) => `${relation.label} ${relation.related_issue_key}`).join('\n')} aria-label={other.map((relation) => `${relation.label} ${relation.related_issue_key}`).join(', ')}>⇢<small>{other.length}</small></span>}</span>;
 }
 
 function projectToDraft(project) {
