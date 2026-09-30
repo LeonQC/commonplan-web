@@ -39,10 +39,11 @@ function summaryFiltersFromUrl() {
 }
 
 async function authRequest(path, options = {}) {
+  const hasJsonBody = options.body !== undefined && options.body !== null;
   const response = await fetchWithTimeout(`${AUTH_BASE_URL}${path}`, {
     ...options,
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...options.headers },
+    headers: { ...(hasJsonBody ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Authentication failed' }));
@@ -142,11 +143,12 @@ function App() {
   const [busy, setBusy] = useState(false);
 
   async function request(path, options = {}, allowRefresh = true) {
+    const hasJsonBody = options.body !== undefined && options.body !== null;
     const response = await fetchWithTimeout(`${API_BASE_URL}${path}`, {
       ...options,
       credentials: 'include',
       headers: {
-        'Content-Type': 'application/json',
+        ...(hasJsonBody ? { 'Content-Type': 'application/json' } : {}),
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         ...options.headers,
       },
