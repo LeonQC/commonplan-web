@@ -31,10 +31,15 @@ test('registration reaches workspace navigation and preserves scope boundaries',
 
   await page.locator('.team-subnav').getByRole('button', { name: 'Cycles' }).click();
   await expect(page.getByRole('heading', { name: 'Cycle schedule' })).toBeVisible();
+  const rolloverCheckbox = await page.getByLabel('Move unfinished issues into the next cycle').boundingBox();
+  expect(rolloverCheckbox.width).toBeLessThanOrEqual(18);
+  expect(rolloverCheckbox.height).toBeLessThanOrEqual(18);
   await page.getByLabel('Enabled').check();
-  await page.getByLabel('Each cycle lasts').selectOption('2');
-  await page.getByLabel('Keep upcoming').selectOption('2');
+  await expect(page.getByLabel('Enabled')).toBeChecked();
+  await page.getByRole('group', { name: 'Cycle duration' }).getByRole('button', { name: '2w' }).click();
+  await page.getByRole('group', { name: 'Upcoming cycle count' }).getByRole('button', { name: '2', exact: true }).click();
   await page.getByLabel('Schedule starts').fill(new Date().toISOString().slice(0, 10));
+  await expect(page.getByLabel('Enabled')).toBeChecked();
   await page.getByRole('button', { name: 'Save schedule' }).click();
   await expect(page.locator('.cycle-card')).toHaveCount(3);
   await page.locator('.cycle-card').first().click();
