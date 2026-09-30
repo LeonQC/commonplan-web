@@ -316,8 +316,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .state-heading { min-height: 38px; display: flex; align-items: center; gap: 7px; padding: 8px 11px; background: #f8f8fa; border-bottom: 1px solid #efeff2; color: #92949f; font-size: 10px; }
 .issue-row { width: 100%; min-height: 42px; display: grid; grid-template-columns: auto auto minmax(120px, 1fr) auto auto auto auto; align-items: center; gap: 10px; padding: 8px 11px; border: 0; border-top: 1px solid #efeff2; background: transparent; color: #363740; text-align: left; }
 .dependency-badges { display: inline-flex; align-items: center; gap: 4px; }
-.dependency-indicator { min-width: 29px; height: 20px; display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 0 5px; border: 1px solid #dedee7; border-radius: 6px; background: #f7f7fa; color: #6d6f7b; font-weight: 750; cursor: default; }
-.dependency-line-icon { width: 14px; height: 12px; fill: currentColor; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; }
+.dependency-indicator { min-width: 32px; height: 22px; display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 0 5px; border: 1px solid #dedee7; border-radius: 6px; background: #f7f7fa; color: #6d6f7b; font-weight: 750; cursor: default; }
+.dependency-indicator > span { font-size: 12px; line-height: 1; filter: saturate(.78); }
 .dependency-indicator small { font-size: 8px; font-weight: 720; line-height: 1; }
 .dependency-indicator.blocked { border-color: #f0caca; background: #fff4f3; color: #b45c62; }
 .dependency-indicator.blocking { border-color: #d9d6ff; background: #f4f3ff; color: #625fd0; }
