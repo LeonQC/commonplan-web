@@ -50,10 +50,18 @@ test('registration reaches workspace navigation and preserves scope boundaries',
     ));
     return dataTransfer;
   });
+  let maskedUploadAcknowledgement = false;
+  await page.route('**/storage/uploads/**', async (route) => {
+    const stored = await route.fetch();
+    maskedUploadAcknowledgement = true;
+    await route.fulfill({ response: stored, status: 503, body: 'Simulated lost upload acknowledgement' });
+  });
   await page.locator('.attachment-card').dispatchEvent('dragenter', { dataTransfer: attachmentDrop });
   await expect(page.getByText('Drop to attach')).toBeVisible();
   await page.locator('.attachment-card').dispatchEvent('drop', { dataTransfer: attachmentDrop });
   await expect(page.getByRole('button', { name: /drag-drop-smoke\.md.*Ready/ })).toBeVisible();
+  expect(maskedUploadAcknowledgement).toBe(true);
+  await page.unroute('**/storage/uploads/**');
 
   await page.getByLabel('Relationship').click();
   await page.locator('.relation-form').getByRole('button', { name: 'is blocked by', exact: true }).click();

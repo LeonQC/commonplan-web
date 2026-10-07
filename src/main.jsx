@@ -167,7 +167,9 @@ function App() {
     }
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-      throw new Error(error.detail || 'Request failed');
+      const requestError = new Error(error.detail || 'Request failed');
+      requestError.status = response.status;
+      throw requestError;
     }
     if (response.status === 204) return null;
     return response.json();
@@ -758,6 +760,31 @@ function App() {
     return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
   }
 
+  async function putAttachment(initiated, file) {
+    const response = await fetch(initiated.upload_url, {
+      method: initiated.upload_method,
+      headers: initiated.upload_headers,
+      body: file,
+    });
+    if (!response.ok) throw new Error(`Object upload acknowledgement failed (${response.status})`);
+  }
+
+  async function confirmAttachmentUpload(fileId) {
+    const retryDelays = [0, 250, 750];
+    let lastError;
+    for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+      if (retryDelays[attempt]) await new Promise((resolve) => window.setTimeout(resolve, retryDelays[attempt]));
+      try {
+        return await request(`/api/v1/workspaces/${workspaceId}/files/${fileId}/complete`, { method: 'POST' });
+      } catch (error) {
+        lastError = error;
+        const retryable = !error.status || error.status === 409 || error.status === 503 || error.status >= 500;
+        if (!retryable) throw error;
+      }
+    }
+    throw lastError;
+  }
+
   async function uploadAttachment(file, resource) {
     if (!file) return;
     setBusy(true);
@@ -776,13 +803,24 @@ function App() {
         }),
       });
       setStatus(`Uploading ${file.name}…`);
-      const upload = await fetch(initiated.upload_url, {
-        method: initiated.upload_method,
-        headers: initiated.upload_headers,
-        body: file,
-      });
-      if (!upload.ok) throw new Error(`Object upload failed (${upload.status})`);
-      await request(`/api/v1/workspaces/${workspaceId}/files/${initiated.attachment.id}/complete`, { method: 'POST' });
+      let uploadError = null;
+      try {
+        await putAttachment(initiated, file);
+      } catch (error) {
+        // The object may have been stored even when its HTTP acknowledgement was lost.
+        uploadError = error;
+      }
+      setStatus(`Verifying ${file.name}…`);
+      try {
+        await confirmAttachmentUpload(initiated.attachment.id);
+      } catch (confirmationError) {
+        if (!uploadError) throw confirmationError;
+        // Confirmation proved the first PUT did not reach storage, so retry the same
+        // signed object key instead of initiating a duplicate attachment record.
+        setStatus(`Retrying ${file.name}…`);
+        await putAttachment(initiated, file);
+        await confirmAttachmentUpload(initiated.attachment.id);
+      }
       const attachments = await request(`${basePath}/attachments`);
       if (resource === 'issue') setIssueAttachments(attachments);
       else setProjectAttachments(attachments);
