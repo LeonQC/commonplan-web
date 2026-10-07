@@ -104,6 +104,7 @@ function App() {
   const [selectedCycle, setSelectedCycle] = useState(null);
   const [cycleSettings, setCycleSettings] = useState({ enabled: false, duration_weeks: 2, upcoming_cycle_count: 3, next_cycle_starts_on: '', rollover_incomplete: true });
   const [selectedProject, setSelectedProject] = useState(null);
+  const [projectAttachments, setProjectAttachments] = useState([]);
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [projectForm, setProjectForm] = useState({ name: '', summary: '', description: '', status: 'planned', lead_user_id: '', target_date: '' });
   const [projectDraft, setProjectDraft] = useState({ name: '', summary: '', description: '', status: 'planned', lead_user_id: '', target_date: '' });
@@ -111,6 +112,7 @@ function App() {
   const [milestoneForm, setMilestoneForm] = useState({ name: '', description: '', target_date: '' });
   const [projectUpdateForm, setProjectUpdateForm] = useState({ body: '', health: 'on_track' });
   const [selectedIssue, setSelectedIssue] = useState(null);
+  const [issueAttachments, setIssueAttachments] = useState([]);
   const [issueRoute, setIssueRoute] = useState(() => parseIssueRoute());
   const [issueActivity, setIssueActivity] = useState([]);
   const [issuePullRequests, setIssuePullRequests] = useState([]);
@@ -165,7 +167,9 @@ function App() {
     }
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-      throw new Error(error.detail || 'Request failed');
+      const requestError = new Error(error.detail || 'Request failed');
+      requestError.status = response.status;
+      throw requestError;
     }
     if (response.status === 204) return null;
     return response.json();
@@ -396,12 +400,13 @@ function App() {
     if (!selectedWorkspaceId || !key) return;
     setIssueLoading(true);
     try {
-      const [issue, activity, collaboration, pullRequests, relations] = await Promise.all([
+      const [issue, activity, collaboration, pullRequests, relations, attachments] = await Promise.all([
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}`),
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/activity`),
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/collaboration`),
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/pull-requests`).catch(() => []),
         request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/relations`),
+        request(`/api/v1/workspaces/${selectedWorkspaceId}/issues/${key}/attachments`),
       ]);
       setSelectedIssue(issue);
       setIssueDraft({ title: issue.title, description: issue.description || '' });
@@ -409,6 +414,7 @@ function App() {
       setIssueCollaboration(collaboration);
       setIssuePullRequests(pullRequests);
       setIssueRelations(relations);
+      setIssueAttachments(attachments);
       setSection('Issues');
       if (issue.team_id !== teamId) setTeamId(issue.team_id);
     } finally {
@@ -430,6 +436,7 @@ function App() {
     setIssuePullRequests([]);
     setIssueCollaboration({ watching: false, watchers: [], sub_issues: [] });
     setIssueRelations([]);
+    setIssueAttachments([]);
     setRelationForm((form) => ({ ...form, target_issue_key: '' }));
     setIssueLoading(true);
     setSection('Issues');
@@ -443,6 +450,7 @@ function App() {
     setIssuePullRequests([]);
     setIssueCollaboration({ watching: false, watchers: [], sub_issues: [] });
     setIssueRelations([]);
+    setIssueAttachments([]);
     setIssueLoading(false);
   }
 
@@ -736,10 +744,112 @@ function App() {
     } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
-  function openProject(project) {
+  async function openProject(project) {
     setSelectedProject(project);
     setProjectDraft(projectToDraft(project));
+    setProjectAttachments([]);
     setSection('Projects');
+    try {
+      setProjectAttachments(await request(`/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects/${project.id}/attachments`));
+    } catch (error) { setStatus(error.message); }
+  }
+
+  async function sha256(file) {
+    if (!window.crypto?.subtle) return null;
+    const digest = await window.crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function putAttachment(initiated, file) {
+    const response = await fetch(initiated.upload_url, {
+      method: initiated.upload_method,
+      headers: initiated.upload_headers,
+      body: file,
+    });
+    if (!response.ok) throw new Error(`Object upload acknowledgement failed (${response.status})`);
+  }
+
+  async function confirmAttachmentUpload(fileId) {
+    const retryDelays = [0, 250, 750];
+    let lastError;
+    for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+      if (retryDelays[attempt]) await new Promise((resolve) => window.setTimeout(resolve, retryDelays[attempt]));
+      try {
+        return await request(`/api/v1/workspaces/${workspaceId}/files/${fileId}/complete`, { method: 'POST' });
+      } catch (error) {
+        lastError = error;
+        const retryable = !error.status || error.status === 409 || error.status === 503 || error.status >= 500;
+        if (!retryable) throw error;
+      }
+    }
+    throw lastError;
+  }
+
+  async function uploadAttachment(file, resource) {
+    if (!file) return;
+    setBusy(true);
+    setStatus(`Preparing ${file.name}…`);
+    try {
+      const basePath = resource === 'issue'
+        ? `/api/v1/workspaces/${workspaceId}/issues/${selectedIssue.key}`
+        : `/api/v1/workspaces/${workspaceId}/teams/${teamId}/projects/${selectedProject.id}`;
+      const initiated = await request(`${basePath}/attachments/initiate`, {
+        method: 'POST',
+        body: JSON.stringify({
+          filename: file.name,
+          content_type: attachmentContentType(file),
+          byte_size: file.size,
+          sha256: await sha256(file),
+        }),
+      });
+      setStatus(`Uploading ${file.name}…`);
+      let uploadError = null;
+      try {
+        await putAttachment(initiated, file);
+      } catch (error) {
+        // The object may have been stored even when its HTTP acknowledgement was lost.
+        uploadError = error;
+      }
+      setStatus(`Verifying ${file.name}…`);
+      try {
+        await confirmAttachmentUpload(initiated.attachment.id);
+      } catch (confirmationError) {
+        if (!uploadError) throw confirmationError;
+        // Confirmation proved the first PUT did not reach storage, so retry the same
+        // signed object key instead of initiating a duplicate attachment record.
+        setStatus(`Retrying ${file.name}…`);
+        await putAttachment(initiated, file);
+        await confirmAttachmentUpload(initiated.attachment.id);
+      }
+      const attachments = await request(`${basePath}/attachments`);
+      if (resource === 'issue') setIssueAttachments(attachments);
+      else setProjectAttachments(attachments);
+      setStatus(`${file.name} attached`);
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
+  }
+
+  async function downloadAttachment(attachment) {
+    try {
+      const result = await request(`/api/v1/workspaces/${workspaceId}/files/${attachment.id}/download-url`);
+      const link = document.createElement('a');
+      link.href = result.download_url;
+      link.rel = 'noopener noreferrer';
+      link.download = attachment.original_filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (error) { setStatus(error.message); }
+  }
+
+  async function deleteAttachment(attachment, resource) {
+    if (!window.confirm(`Remove ${attachment.original_filename}?`)) return;
+    setBusy(true);
+    try {
+      await request(`/api/v1/workspaces/${workspaceId}/files/${attachment.id}`, { method: 'DELETE' });
+      if (resource === 'issue') setIssueAttachments((items) => items.filter((item) => item.id !== attachment.id));
+      else setProjectAttachments((items) => items.filter((item) => item.id !== attachment.id));
+      setStatus('Attachment removed');
+    } catch (error) { setStatus(error.message); } finally { setBusy(false); }
   }
 
   async function createProject(event) {
@@ -1190,6 +1300,16 @@ function App() {
                 <div className="pull-request-list">{issuePullRequests.map((pullRequest) => <a key={pullRequest.id} href={pullRequest.html_url} target="_blank" rel="noreferrer"><span className={`pr-state ${pullRequest.state}`}>{pullRequest.is_draft ? 'draft' : pullRequest.state}</span><div><strong>{pullRequest.title}</strong><small>{pullRequest.github_repo_full_name} #{pullRequest.pr_number}</small></div><span className="external-arrow">↗</span></a>)}{!issuePullRequests.length && <div className="development-empty"><span>↗</span><div><strong>No linked pull requests</strong><p>Add {selectedIssue.key} to a PR title. No repository mapping is required.</p></div></div>}</div>
               </section>
 
+              <AttachmentPanel
+                title="Attachments"
+                description="Keep source documents, screenshots, and delivery context with this issue."
+                attachments={issueAttachments}
+                busy={busy}
+                onUpload={(file) => uploadAttachment(file, 'issue')}
+                onDownload={downloadAttachment}
+                onDelete={(attachment) => deleteAttachment(attachment, 'issue')}
+              />
+
               <section className="activity-card">
                 <div className="activity-heading"><div><h2>Activity</h2><p>Comments and changes are recorded chronologically.</p></div><span>{issueActivity.filter((item) => item.event_type !== 'comment.created').length}</span></div>
                 <form className="comment-composer" onSubmit={addComment}>
@@ -1312,6 +1432,15 @@ function App() {
                 <div className="form-actions"><button className="secondary" disabled={busy}>Save brief</button></div>
               </form>
               <section className="project-section-card"><div className="project-section-heading"><div><h2>Objectives & success</h2><p>Make the intended outcome and definition of success explicit.</p></div></div><div className="objective-columns"><ObjectiveList title="Objectives" items={objectives} onToggle={toggleObjective} /><ObjectiveList title="Success criteria" items={criteria} onToggle={toggleObjective} /></div><form className="inline-create-form" onSubmit={addObjective}><select value={objectiveForm.kind} onChange={(event) => setObjectiveForm({ ...objectiveForm, kind: event.target.value })}><option value="objective">Objective</option><option value="success_criterion">Success criterion</option></select><input placeholder="Add an outcome…" value={objectiveForm.body} onChange={(event) => setObjectiveForm({ ...objectiveForm, body: event.target.value })} required /><button className="secondary" disabled={busy}>Add</button></form></section>
+              <AttachmentPanel
+                title="Project documents"
+                description="Attach briefs, decisions, research, and reference material for the whole project."
+                attachments={projectAttachments}
+                busy={busy}
+                onUpload={(file) => uploadAttachment(file, 'project')}
+                onDownload={downloadAttachment}
+                onDelete={(attachment) => deleteAttachment(attachment, 'project')}
+              />
               <section className="project-section-card"><div className="project-section-heading"><div><h2>Linked issues</h2><p>Progress is derived from workflow states—never edited by hand.</p></div><span>{selectedProject.issue_count}</span></div><div className="project-issue-list">{selectedProject.linked_issues.map((issue) => <button className="issue-row" key={issue.id} onClick={() => openIssue(issue)}><span className="issue-key">{issue.key}</span><strong>{issue.title}</strong><StateBadge name={issue.workflow_state_name} /></button>)}{!selectedProject.linked_issues.length && <div className="inline-empty">Link issues from the issue detail properties or when creating an issue.</div>}</div></section>
               <section className="project-section-card"><div className="project-section-heading"><div><h2>Project updates</h2><p>Share concise health and delivery context with the team.</p></div></div><form className="project-update-form" onSubmit={addProjectUpdate}><textarea placeholder="What changed since the last update?" value={projectUpdateForm.body} onChange={(event) => setProjectUpdateForm({ ...projectUpdateForm, body: event.target.value })} required /><div><select value={projectUpdateForm.health} onChange={(event) => setProjectUpdateForm({ ...projectUpdateForm, health: event.target.value })}><option value="on_track">On track</option><option value="at_risk">At risk</option><option value="off_track">Off track</option></select><button className="primary" disabled={busy}>Post update</button></div></form><div className="project-update-list">{selectedProject.updates.map((update) => <article key={update.id}><div><span className={`health-dot ${update.health || ''}`} /><strong>{healthLabel(update.health)}</strong><time>{formatDateTime(update.created_at)}</time></div><p>{update.body}</p><small>{update.author_name || 'Former member'}</small></article>)}{!selectedProject.updates.length && <div className="inline-empty">No project updates yet.</div>}</div></section>
             </div>
@@ -1451,6 +1580,62 @@ function summarySearchParams(filters) {
 
 function healthLabel(value) {
   return ({ on_track: 'On track', at_risk: 'At risk', off_track: 'Off track' })[value] || 'No health set';
+}
+
+function attachmentContentType(file) {
+  if (file.type) return file.type;
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  return ({
+    csv: 'text/csv', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    gif: 'image/gif', jpeg: 'image/jpeg', jpg: 'image/jpeg', json: 'application/json', md: 'text/markdown',
+    pdf: 'application/pdf', png: 'image/png', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    txt: 'text/plain', webp: 'image/webp', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })[extension] || 'application/octet-stream';
+}
+
+function formatBytes(value) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function AttachmentPanel({ title, description, attachments, busy, onUpload, onDownload, onDelete }) {
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepth = useRef(0);
+  const accept = '.pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp';
+
+  function dragEnter(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (busy) return;
+    dragDepth.current += 1;
+    setDragActive(true);
+  }
+
+  function dragOver(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = busy ? 'none' : 'copy';
+  }
+
+  function dragLeave(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragActive(false);
+  }
+
+  function drop(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepth.current = 0;
+    setDragActive(false);
+    if (busy) return;
+    const [file] = Array.from(event.dataTransfer?.files || []);
+    if (file) onUpload(file);
+  }
+
+  return <section className={`attachment-card ${dragActive ? 'drag-active' : ''}`} onDragEnter={dragEnter} onDragOver={dragOver} onDragLeave={dragLeave} onDrop={drop} aria-label={`${title} drop zone`}><div className="attachment-heading"><div><span className="eyebrow">DOCUMENTS</span><h2>{title}</h2><p>{description}</p></div><label className={`attachment-upload ${busy ? 'disabled' : ''}`}><span>＋ Add file</span><input type="file" disabled={busy} accept={accept} onChange={(event) => { const [file] = event.target.files; if (file) onUpload(file); event.target.value = ''; }} /></label></div><div className="attachment-list">{attachments.map((attachment) => <article key={attachment.id}><span className="attachment-icon" aria-hidden="true">{attachment.content_type.startsWith('image/') ? '▧' : '▤'}</span><button type="button" className="attachment-name" onClick={() => onDownload(attachment)} disabled={attachment.upload_status !== 'ready'}><strong>{attachment.original_filename}</strong><small>{formatBytes(attachment.byte_size)} · {attachment.upload_status === 'ready' ? 'Ready' : 'Processing'}</small></button><button type="button" className="attachment-delete" aria-label={`Remove ${attachment.original_filename}`} onClick={() => onDelete(attachment)} disabled={busy}>×</button></article>)}{!attachments.length && <div className="attachment-empty"><span>Drop a file here, or use Add file</span><small>PDF, Office, text, Markdown, CSV, JSON, or image · up to 25 MB</small></div>}</div>{dragActive && <div className="attachment-drop-overlay" aria-hidden="true"><strong>Drop to attach</strong><span>The file will be added to this {title.toLowerCase()}.</span></div>}</section>;
 }
 
 function ObjectiveList({ title, items, onToggle }) {
