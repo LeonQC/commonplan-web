@@ -22,11 +22,18 @@
 }
 
 .attachment-card {
+  position: relative;
   background: var(--surface, #fff);
   border: 1px solid var(--border, #e3e5eb);
   border-radius: 16px;
   padding: 20px;
   box-shadow: 0 1px 2px rgba(23, 27, 38, .04);
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+
+.attachment-card.drag-active {
+  border-color: #8f91eb;
+  box-shadow: 0 0 0 3px rgba(94, 92, 230, .12), 0 10px 28px rgba(37, 39, 78, .08);
 }
 
 .attachment-heading {
@@ -98,6 +105,22 @@
 .attachment-empty { display: grid; place-items: center; gap: 4px; padding: 22px; border: 1px dashed #dbddea; border-radius: 10px; color: #858a98; text-align: center; }
 .attachment-empty span { color: #555b6c; font-size: 13px; font-weight: 600; }
 .attachment-empty small { font-size: 11px; }
+.attachment-drop-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 3;
+  display: grid;
+  place-content: center;
+  gap: 5px;
+  border: 1px dashed #777ae2;
+  border-radius: 12px;
+  background: rgba(247, 247, 255, .96);
+  color: #5559cf;
+  text-align: center;
+  pointer-events: none;
+}
+.attachment-drop-overlay strong { font-size: 14px; }
+.attachment-drop-overlay span { color: #73768a; font-size: 12px; }
 
 * { box-sizing: border-box; }
 html { background: #f8f8fa; }

@@ -41,6 +41,22 @@ test('registration reaches workspace navigation and preserves scope boundaries',
     await expect(page.getByRole('heading', { name: 'Issue detail' })).toBeVisible();
   }
 
+  const attachmentDrop = await page.evaluateHandle(() => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File(
+      ['# Drag-and-drop attachment smoke test\n'],
+      'drag-drop-smoke.md',
+      { type: 'text/markdown' },
+    ));
+    return dataTransfer;
+  });
+  await page.locator('.attachment-card').dispatchEvent('dragenter', { dataTransfer: attachmentDrop });
+  await expect(page.getByText('Drop to attach')).toBeVisible();
+  await page.locator('.attachment-card').dispatchEvent('drop', { dataTransfer: attachmentDrop });
+  await expect(page.getByRole('button', { name: /drag-drop-smoke\.md.*Ready/ })).toBeVisible();
+
+  await page.getByLabel('Relationship').click();
+  await page.locator('.relation-form').getByRole('button', { name: 'is blocked by', exact: true }).click();
   await page.getByLabel('Issue key').fill('CORE-1');
   await page.getByRole('button', { name: 'Add relationship' }).click();
   await expect(page.locator('.relation-list')).toContainText('is blocked by');
@@ -48,7 +64,7 @@ test('registration reaches workspace navigation and preserves scope boundaries',
   await page.getByPlaceholder('Add a sub-issue…').fill('Nested acceptance check');
   await page.locator('.sub-issues form button').click();
   await expect(page.locator('.sub-issues')).toContainText('Nested acceptance check');
-  await page.locator('.relation-list').getByRole('button', { name: /CORE-1/ }).click();
+  await page.locator('.relation-list > div > button:not(.relation-remove)').click();
   await expect(page.locator('.relation-list')).toContainText('blocks');
   await expect(page.locator('.relation-list')).toContainText('CORE-4');
   await page.getByLabel('Relationship').click();
@@ -66,7 +82,7 @@ test('registration reaches workspace navigation and preserves scope boundaries',
   await expect(page.getByRole('heading', { name: 'Project delivery' })).toBeVisible();
   await expect(page.getByRole('img', { name: /created and completed issue trend/i })).toBeVisible();
   await expect(page.locator('.composition-strip button')).toHaveCount(4);
-  await expect(page.locator('.workload-list button')).toHaveCount(1);
+  await expect(page.locator('.workload-list')).toContainText('Playwright User');
 
   await page.locator('.team-subnav').getByRole('button', { name: 'Cycles' }).click();
   await expect(page.getByRole('heading', { name: 'Cycle schedule' })).toBeVisible();

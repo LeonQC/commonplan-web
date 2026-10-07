@@ -1562,7 +1562,42 @@ function formatBytes(value) {
 }
 
 function AttachmentPanel({ title, description, attachments, busy, onUpload, onDownload, onDelete }) {
-  return <section className="attachment-card"><div className="attachment-heading"><div><span className="eyebrow">DOCUMENTS</span><h2>{title}</h2><p>{description}</p></div><label className={`attachment-upload ${busy ? 'disabled' : ''}`}><span>＋ Add file</span><input type="file" disabled={busy} accept=".pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp" onChange={(event) => { const [file] = event.target.files; if (file) onUpload(file); event.target.value = ''; }} /></label></div><div className="attachment-list">{attachments.map((attachment) => <article key={attachment.id}><span className="attachment-icon" aria-hidden="true">{attachment.content_type.startsWith('image/') ? '▧' : '▤'}</span><button type="button" className="attachment-name" onClick={() => onDownload(attachment)} disabled={attachment.upload_status !== 'ready'}><strong>{attachment.original_filename}</strong><small>{formatBytes(attachment.byte_size)} · {attachment.upload_status === 'ready' ? 'Ready' : 'Processing'}</small></button><button type="button" className="attachment-delete" aria-label={`Remove ${attachment.original_filename}`} onClick={() => onDelete(attachment)} disabled={busy}>×</button></article>)}{!attachments.length && <div className="attachment-empty"><span>Drop-in context, kept with the work</span><small>PDF, Office, text, Markdown, CSV, JSON, or image · up to 25 MB</small></div>}</div></section>;
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepth = useRef(0);
+  const accept = '.pdf,.doc,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.gif,.webp';
+
+  function dragEnter(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (busy) return;
+    dragDepth.current += 1;
+    setDragActive(true);
+  }
+
+  function dragOver(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = busy ? 'none' : 'copy';
+  }
+
+  function dragLeave(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragActive(false);
+  }
+
+  function drop(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepth.current = 0;
+    setDragActive(false);
+    if (busy) return;
+    const [file] = Array.from(event.dataTransfer?.files || []);
+    if (file) onUpload(file);
+  }
+
+  return <section className={`attachment-card ${dragActive ? 'drag-active' : ''}`} onDragEnter={dragEnter} onDragOver={dragOver} onDragLeave={dragLeave} onDrop={drop} aria-label={`${title} drop zone`}><div className="attachment-heading"><div><span className="eyebrow">DOCUMENTS</span><h2>{title}</h2><p>{description}</p></div><label className={`attachment-upload ${busy ? 'disabled' : ''}`}><span>＋ Add file</span><input type="file" disabled={busy} accept={accept} onChange={(event) => { const [file] = event.target.files; if (file) onUpload(file); event.target.value = ''; }} /></label></div><div className="attachment-list">{attachments.map((attachment) => <article key={attachment.id}><span className="attachment-icon" aria-hidden="true">{attachment.content_type.startsWith('image/') ? '▧' : '▤'}</span><button type="button" className="attachment-name" onClick={() => onDownload(attachment)} disabled={attachment.upload_status !== 'ready'}><strong>{attachment.original_filename}</strong><small>{formatBytes(attachment.byte_size)} · {attachment.upload_status === 'ready' ? 'Ready' : 'Processing'}</small></button><button type="button" className="attachment-delete" aria-label={`Remove ${attachment.original_filename}`} onClick={() => onDelete(attachment)} disabled={busy}>×</button></article>)}{!attachments.length && <div className="attachment-empty"><span>Drop a file here, or use Add file</span><small>PDF, Office, text, Markdown, CSV, JSON, or image · up to 25 MB</small></div>}</div>{dragActive && <div className="attachment-drop-overlay" aria-hidden="true"><strong>Drop to attach</strong><span>The file will be added to this {title.toLowerCase()}.</span></div>}</section>;
 }
 
 function ObjectiveList({ title, items, onToggle }) {
