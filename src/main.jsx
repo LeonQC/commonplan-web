@@ -101,6 +101,10 @@ function App() {
   const [viewForm, setViewForm] = useState({ name: '', visibility: 'private' });
   const [inbox, setInbox] = useState({ unread_count: 0, notifications: [] });
   const [myIssues, setMyIssues] = useState([]);
+  const [retrievalQuery, setRetrievalQuery] = useState('');
+  const [retrievalTeamId, setRetrievalTeamId] = useState('');
+  const [retrievalData, setRetrievalData] = useState(null);
+  const [retrievalLoading, setRetrievalLoading] = useState(false);
   const [selectedCycle, setSelectedCycle] = useState(null);
   const [cycleSettings, setCycleSettings] = useState({ enabled: false, duration_weeks: 2, upcoming_cycle_count: 3, next_cycle_starts_on: '', rollover_incomplete: true });
   const [selectedProject, setSelectedProject] = useState(null);
@@ -264,6 +268,24 @@ function App() {
 
   async function loadMyIssues() {
     setMyIssues(await request(`/api/v1/me/issues?workspace_id=${workspaceId}`));
+  }
+
+  async function searchWorkspaceKnowledge(event) {
+    event.preventDefault();
+    const query = retrievalQuery.trim();
+    if (!query) return;
+    setRetrievalLoading(true);
+    setStatus('');
+    try {
+      setRetrievalData(await request(`/api/v1/workspaces/${workspaceId}/retrieval/search`, {
+        method: 'POST',
+        body: JSON.stringify({ query, limit: 10, team_id: retrievalTeamId || null }),
+      }));
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setRetrievalLoading(false);
+    }
   }
 
   async function loadGitHubHealth() {
@@ -1187,6 +1209,7 @@ function App() {
   ];
   const workspaceNavItems = [
     { name: 'My Issues', icon: 'issues' },
+    { name: 'Search', icon: 'search' },
     { name: 'Views', icon: 'views' },
     { name: 'Inbox', icon: 'inbox' },
     { name: 'Settings', icon: 'settings' },
@@ -1194,6 +1217,37 @@ function App() {
   const workspaceSections = new Set(workspaceNavItems.map((item) => item.name));
 
   function planningContent() {
+    if (section === 'Search') return (
+      <section className="retrieval-page">
+        <header className="retrieval-hero">
+          <span className="retrieval-mark"><Icon name="search" /></span>
+          <div><span className="eyebrow">WORKSPACE KNOWLEDGE</span><h2>Find evidence, not just titles</h2><p>Search indexed attachments across the issues and projects you can access.</p></div>
+        </header>
+        <form className="retrieval-search" onSubmit={searchWorkspaceKnowledge}>
+          <Icon name="search" />
+          <input autoFocus value={retrievalQuery} onChange={(event) => setRetrievalQuery(event.target.value)} placeholder="What did we decide about attachment retries?" aria-label="Search workspace knowledge" />
+          <button className="primary" disabled={retrievalLoading || !retrievalQuery.trim()}>{retrievalLoading ? 'Searching…' : 'Search'}</button>
+        </form>
+        <div className="retrieval-scope" aria-label="Team search scope">
+          <span>Scope</span>
+          <button className={!retrievalTeamId ? 'selected' : ''} onClick={() => setRetrievalTeamId('')}>All accessible teams</button>
+          {teams.map((team) => <button key={team.id} className={retrievalTeamId === team.id ? 'selected' : ''} onClick={() => setRetrievalTeamId(team.id)}>{team.name}</button>)}
+        </div>
+        {retrievalLoading ? <div className="retrieval-loading"><div className="spinner" />Searching indexed evidence…</div> : retrievalData ? (
+          <div className="retrieval-results">
+            <div className="retrieval-results-heading"><div><strong>{retrievalData.results.length} result{retrievalData.results.length === 1 ? '' : 's'}</strong><span>Ranked from {retrievalData.candidate_count} authorized candidates</span></div><small>“{retrievalData.query}”</small></div>
+            {retrievalData.results.map((result) => <article className="retrieval-result" key={result.chunk_id}>
+              <div className="retrieval-result-top"><span className="retrieval-file"><Icon name="file" />{result.citation.filename}</span><span className="retrieval-score">{Math.round(result.score * 100)}% match</span></div>
+              <p className="retrieval-excerpt">{result.excerpt}</p>
+              {result.context && result.context !== result.excerpt && <details className="retrieval-context"><summary>Show surrounding context</summary><p>{result.context}</p></details>}
+              <footer><span>Page {result.citation.page_number}</span>{result.citation.heading_path && <span>{result.citation.heading_path}</span>}<span>{teams.find((team) => team.id === result.citation.team_id)?.name || 'Accessible team'}</span>{result.citation.resource_type === 'issue' ? <button onClick={() => openIssue({ key: result.citation.resource_key, workspace_id: workspaceId })}>{result.citation.resource_key} <span aria-hidden="true">→</span></button> : <span>Project attachment</span>}</footer>
+            </article>)}
+            {!retrievalData.results.length && <div className="retrieval-empty"><span><Icon name="search" /></span><h3>No indexed evidence found</h3><p>Try different wording, broaden the team scope, or attach a document and wait for ingestion to finish.</p></div>}
+          </div>
+        ) : <div className="retrieval-empty initial"><span><Icon name="file" /></span><h3>Your workspace knowledge, with citations</h3><p>Results include the exact attachment and page so you can verify the source before using it.</p></div>}
+      </section>
+    );
+
     if (section === 'Overview') return (
       <section className="overview">
         <div className="hero-card"><div><span className="team-icon large">{selectedTeam.issue_prefix.slice(0, 1)}</span><h2>{selectedTeam.name}</h2><p>{selectedTeam.description || 'A focused space for this team’s projects, cycles, and issues.'}</p></div><span className="prefix-chip">{selectedTeam.issue_prefix}</span></div>
@@ -1759,6 +1813,8 @@ function Icon({ name }) {
     projects: <><path d="M4 7h6l2 2h8v10H4z" /><path d="M4 7V5h6l2 2" /></>,
     members: <><circle cx="9" cy="8" r="3" /><circle cx="17" cy="9" r="2.5" /><path d="M3 20c0-4 2.5-6 6-6s6 2 6 6M14 15c3.5 0 6 1.5 6 5" /></>,
     views: <><path d="M4 5h16v14H4z" /><path d="M9 5v14M9 10h11" /></>,
+    search: <><circle cx="11" cy="11" r="7" /><path d="m16 16 5 5" /></>,
+    file: <><path d="M6 3h8l4 4v14H6z" /><path d="M14 3v5h5" /></>,
     inbox: <><path d="M4 5h16v14H4z" /><path d="m4 14 4-4h8l4 4M9 14h6" /></>,
     settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></>,
     logout: <><path d="M10 5H5v14h5M14 8l4 4-4 4M18 12H9" /></>,
